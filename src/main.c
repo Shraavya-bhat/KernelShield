@@ -7,6 +7,7 @@
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "../include/ks_event.h"
+#include "detector/process_table.h"
 #include "process_exec.skel.h"
 
 static struct env {
@@ -86,7 +87,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	if (e->type == KS_EVENT_EXEC) {
+	if (e->type == KS_EVENT_EXEC)
+    ks_process_add(e);
+else if (e->type == KS_EVENT_EXIT)
+    ks_process_remove(e);
+
+if (e->type == KS_EVENT_EXIT) {
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
 		       ts,
 		       "EXEC",
@@ -110,6 +116,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	}
 
 	fflush(stdout);
+	ks_process_table_print();
 	return 0;
 }
 
@@ -130,7 +137,7 @@ int main(int argc, char **argv)
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
-
+	ks_process_table_init();
 	/* Load and verify BPF application */
 	skel = process_exec_bpf__open();
 	if (!skel) {
