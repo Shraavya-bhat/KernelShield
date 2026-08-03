@@ -1,9 +1,0 @@
-/home/thrisha/KernelShield/build/CMakeFiles/libbpf.dir
-/home/thrisha/KernelShield/build/CMakeFiles/bpftool.dir
-/home/thrisha/KernelShield/build/CMakeFiles/kernelshield.dir
-/home/thrisha/KernelShield/build/CMakeFiles/edit_cache.dir
-/home/thrisha/KernelShield/build/CMakeFiles/rebuild_cache.dir
-/home/thrisha/KernelShield/build/CMakeFiles/list_install_components.dir
-/home/thrisha/KernelShield/build/CMakeFiles/install.dir
-/home/thrisha/KernelShield/build/CMakeFiles/install/local.dir
-/home/thrisha/KernelShield/build/CMakeFiles/install/strip.dir

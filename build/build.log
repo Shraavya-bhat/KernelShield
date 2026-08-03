@@ -1,4 +1,0 @@
-[ 40%] Built target libbpf
-[ 80%] Built target bpftool
-Consolidate compiler generated dependencies of target kernelshield
-[100%] Built target kernelshield
