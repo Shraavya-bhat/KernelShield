@@ -7,6 +7,7 @@
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "../include/ks_event.h"
+#include "detector/process_table.h"
 #include "process_exec.skel.h"
 
 static struct env {
@@ -79,21 +80,43 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	char ts[32];
 	time_t t;
 
+	(void)ctx;
+	(void)data_sz;
+
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	if (e->exit_event) {
-		printf("%-8s %-5s %-16s %-7d %-7d [%u]", ts, "EXIT", e->comm, e->pid, e->ppid,
-		       e->exit_code);
-		if (e->duration_ns)
-			printf(" (%lums)", e->duration_ns / 1000000);
-		printf("\n");
-	} else {
-		printf("%-8s %-5s %-16s %-7d %-7d %s\n", ts, "EXEC", e->comm, e->pid, e->ppid,
+	if (e->type == KS_EVENT_EXEC)
+    ks_process_add(e);
+else if (e->type == KS_EVENT_EXIT)
+    ks_process_remove(e);
+
+if (e->type == KS_EVENT_EXIT) {
+		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
+		       ts,
+		       "EXEC",
+		       e->pid,
+		       e->ppid,
+		       e->uid,
+		       e->gid,
+		       e->comm,
 		       e->filename);
+	} else if (e->type == KS_EVENT_EXIT) {
+		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s code=%d duration=%lums\n",
+		       ts,
+		       "EXIT",
+		       e->pid,
+		       e->ppid,
+		       e->uid,
+		       e->gid,
+		       e->comm,
+		       e->exit_code,
+		       e->duration_ns / 1000000UL);
 	}
 
+	fflush(stdout);
+	ks_process_table_print();
 	return 0;
 }
 
@@ -114,7 +137,7 @@ int main(int argc, char **argv)
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
-
+	ks_process_table_init();
 	/* Load and verify BPF application */
 	skel = process_exec_bpf__open();
 	if (!skel) {
@@ -148,8 +171,15 @@ int main(int argc, char **argv)
 	}
 
 	/* Process events */
-	printf("%-8s %-5s %-16s %-7s %-7s %s\n", "TIME", "EVENT", "COMM", "PID", "PPID",
-	       "FILENAME/EXIT CODE");
+	printf("%-8s %-6s %-6s %-6s %-6s %-6s %-16s %s\n",
+       "TIME",
+       "EVENT",
+       "PID",
+       "PPID",
+       "UID",
+       "GID",
+       "COMM",
+       "FILE");
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
 		/* Ctrl-C will cause -EINTR */

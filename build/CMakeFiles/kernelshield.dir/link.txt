@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/kernelshield.dir/src/main.c.o -o kernelshield  libbpf/libbpf.a -lelf -lz 

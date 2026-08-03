@@ -1,8 +1,20 @@
 #ifndef __KS_EVENT_H
 #define __KS_EVENT_H
 
+#ifdef __BPF__
+
+typedef unsigned long long uint64_t;
+typedef unsigned int       uint32_t;
+typedef int                int32_t;
+typedef unsigned short     uint16_t;
+typedef _Bool              bool;
+
+#else
+
 #include <stdint.h>
 #include <stdbool.h>
+
+#endif
 
 #define TASK_COMM_LEN       16
 #define KS_MAX_FILENAME_LEN 256
