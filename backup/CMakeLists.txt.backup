@@ -1,0 +1,81 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(KernelShield C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(LIBBPF REQUIRED libbpf)
+pkg_check_modules(LIBELF REQUIRED libelf)
+pkg_check_modules(ZLIB REQUIRED zlib)
+
+include_directories(
+    include
+    ebpf
+    ${LIBBPF_INCLUDE_DIRS}
+)
+
+set(BPF_SOURCE
+    ${CMAKE_SOURCE_DIR}/ebpf/process_exec.bpf.c
+)
+
+set(BPF_OBJECT
+    ${CMAKE_BINARY_DIR}/process_exec.bpf.o
+)
+
+set(BPF_SKEL
+    ${CMAKE_SOURCE_DIR}/ebpf/process_exec.skel.h
+)
+
+add_custom_command(
+    OUTPUT ${BPF_OBJECT}
+    COMMAND clang
+            -g
+            -O2
+            -target bpf
+            -D__TARGET_ARCH_x86
+            -I${CMAKE_SOURCE_DIR}/ebpf
+            -I${CMAKE_SOURCE_DIR}/include
+            -c ${BPF_SOURCE}
+            -o ${BPF_OBJECT}
+    DEPENDS ${BPF_SOURCE}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${BPF_SKEL}
+    COMMAND bpftool gen skeleton
+            ${BPF_OBJECT}
+            > ${BPF_SKEL}
+    DEPENDS ${BPF_OBJECT}
+    VERBATIM
+)
+
+add_custom_target(generate_bpf_skeleton
+    DEPENDS ${BPF_SKEL}
+)
+
+add_executable(kernelshield
+    src/main.c
+)
+
+add_dependencies(kernelshield generate_bpf_skeleton)
+
+target_include_directories(kernelshield PRIVATE
+    include
+    ebpf
+)
+
+target_link_libraries(kernelshield
+    ${LIBBPF_LIBRARIES}
+    ${LIBELF_LIBRARIES}
+    ${ZLIB_LIBRARIES}
+)
+
+target_compile_options(kernelshield PRIVATE
+    -Wall
+    -Wextra
+    -O2
+)
