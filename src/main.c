@@ -92,7 +92,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 else if (e->type == KS_EVENT_EXIT)
     ks_process_remove(e);
 
-if (e->type == KS_EVENT_EXIT) {
+if (e->type == KS_EVENT_EXEC) {
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
 		       ts,
 		       "EXEC",
