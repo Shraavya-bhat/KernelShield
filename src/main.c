@@ -2,6 +2,7 @@
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
 #include <signal.h>
+#include <string.h>
 #include <stdio.h>
 #include <time.h>
 #include <sys/resource.h>
@@ -89,6 +90,29 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	if (e->type == KS_EVENT_EXEC)
     ks_process_add(e);
+    ks_process *parent = ks_process_find(e->ppid);
+
+if (parent) {
+
+    if ((!strcmp(parent->comm, "nginx") ||
+         !strcmp(parent->comm, "apache2") ||
+         !strcmp(parent->comm, "python3") ||
+         !strcmp(parent->comm, "php-fpm")) &&
+
+        (!strcmp(e->comm, "bash") ||
+         !strcmp(e->comm, "sh") ||
+         !strcmp(e->comm, "dash") ||
+         !strcmp(e->comm, "zsh"))) {
+
+        printf("\n");
+        printf("=========================================\n");
+        printf("[HIGH] Suspicious Parent-Child Execution\n");
+        printf("Parent : %s (%u)\n", parent->comm, parent->pid);
+        printf("Child  : %s (%u)\n", e->comm, e->pid);
+        printf("MITRE  : T1059 Command and Scripting Interpreter\n");
+        printf("=========================================\n\n");
+    }
+}
 else if (e->type == KS_EVENT_EXIT)
     ks_process_remove(e);
 
@@ -116,7 +140,7 @@ if (e->type == KS_EVENT_EXEC) {
 	}
 
 	fflush(stdout);
-	ks_process_table_print();
+	//ks_process_table_print();
 	return 0;
 }
 
