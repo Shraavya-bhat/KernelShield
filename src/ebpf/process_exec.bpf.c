@@ -93,6 +93,82 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 }
 
 /* ---------------------------------------------------------- */
+/* NETWORK CONNECT */
+/* ---------------------------------------------------------- */
+
+SEC("tracepoint/syscalls/sys_enter_connect")
+int handle_connect(struct trace_event_raw_sys_enter *ctx)
+{
+    struct sockaddr_in addr;
+    struct ks_event *e;
+
+    u64 id;
+    u64 uid_gid;
+
+    pid_t pid;
+
+    const struct sockaddr *user_addr;
+
+    id = bpf_get_current_pid_tgid();
+    pid = id >> 32;
+
+    user_addr = (const struct sockaddr *)ctx->args[1];
+
+    if (!user_addr)
+        return 0;
+
+    if (bpf_probe_read_user(
+            &addr,
+            sizeof(addr),
+            user_addr) != 0)
+        return 0;
+
+    if (addr.sin_family != 2)
+        return 0;
+
+    e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e)
+        return 0;
+
+    uid_gid = bpf_get_current_uid_gid();
+
+    e->timestamp_ns = bpf_ktime_get_ns();
+    e->duration_ns = 0;
+
+    e->pid = pid;
+
+    {
+        struct task_struct *task;
+
+        task = (struct task_struct *)bpf_get_current_task();
+
+        e->ppid = BPF_CORE_READ(task, real_parent, tgid);
+    }
+
+    e->uid = (u32)uid_gid;
+    e->gid = (u32)(uid_gid >> 32);
+
+    e->exit_code = 0;
+
+    e->type = KS_EVENT_NETWORK;
+    e->exit_event = false;
+
+    bpf_get_current_comm(e->comm, sizeof(e->comm));
+
+    e->filename[0] = '\0';
+
+    e->src_ipv4 = 0;
+    e->dst_ipv4 = addr.sin_addr.s_addr;
+    e->src_port = 0;
+    e->dst_port = addr.sin_port;
+
+    bpf_ringbuf_submit(e, 0);
+
+    return 0;
+}
+
+
+/* ---------------------------------------------------------- */
 /* EXIT */
 /* ---------------------------------------------------------- */
 

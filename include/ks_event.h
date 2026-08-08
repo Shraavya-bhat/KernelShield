@@ -45,6 +45,12 @@ struct ks_event {
 
     char comm[TASK_COMM_LEN];
     char filename[KS_MAX_FILENAME_LEN];
+
+    /* Network event information */
+    uint32_t src_ipv4;
+    uint32_t dst_ipv4;
+    uint16_t src_port;
+    uint16_t dst_port;
 };
 
 #endif

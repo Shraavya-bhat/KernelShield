@@ -2,6 +2,8 @@
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
 #include <signal.h>
+
+#include <arpa/inet.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -88,35 +90,42 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	if (e->type == KS_EVENT_EXEC)
-    ks_process_add(e);
-    ks_process *parent = ks_process_find(e->ppid);
+	/* ------------------------------------------------------ */
+	/* EXEC event                                              */
+	/* ------------------------------------------------------ */
 
-if (parent) {
+	if (e->type == KS_EVENT_EXEC) {
 
-    if ((!strcmp(parent->comm, "nginx") ||
-         !strcmp(parent->comm, "apache2") ||
-         !strcmp(parent->comm, "python3") ||
-         !strcmp(parent->comm, "php-fpm")) &&
+		ks_process_add(e);
 
-        (!strcmp(e->comm, "bash") ||
-         !strcmp(e->comm, "sh") ||
-         !strcmp(e->comm, "dash") ||
-         !strcmp(e->comm, "zsh"))) {
+		/*
+		 * Check whether this process was spawned by a
+		 * process that normally should not create a shell.
+		 */
+		ks_process *parent = ks_process_find(e->ppid);
 
-        printf("\n");
-        printf("=========================================\n");
-        printf("[HIGH] Suspicious Parent-Child Execution\n");
-        printf("Parent : %s (%u)\n", parent->comm, parent->pid);
-        printf("Child  : %s (%u)\n", e->comm, e->pid);
-        printf("MITRE  : T1059 Command and Scripting Interpreter\n");
-        printf("=========================================\n\n");
-    }
-}
-else if (e->type == KS_EVENT_EXIT)
-    ks_process_remove(e);
+		if (parent) {
+			if ((!strcmp(parent->comm, "nginx") ||
+			     !strcmp(parent->comm, "apache2") ||
+			     !strcmp(parent->comm, "python3") ||
+			     !strcmp(parent->comm, "php-fpm")) &&
+			    (!strcmp(e->comm, "bash") ||
+			     !strcmp(e->comm, "sh") ||
+			     !strcmp(e->comm, "dash") ||
+			     !strcmp(e->comm, "zsh"))) {
 
-if (e->type == KS_EVENT_EXEC) {
+				printf("\n");
+				printf("=========================================\n");
+				printf("[HIGH] Suspicious Parent-Child Execution\n");
+				printf("Parent : %s (%u)\n",
+				       parent->comm, parent->pid);
+				printf("Child  : %s (%u)\n",
+				       e->comm, e->pid);
+				printf("MITRE  : T1059 Command and Scripting Interpreter\n");
+				printf("=========================================\n\n");
+			}
+		}
+
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
 		       ts,
 		       "EXEC",
@@ -126,7 +135,14 @@ if (e->type == KS_EVENT_EXEC) {
 		       e->gid,
 		       e->comm,
 		       e->filename);
-	} else if (e->type == KS_EVENT_EXIT) {
+	}
+
+	/* ------------------------------------------------------ */
+	/* EXIT event                                              */
+	/* ------------------------------------------------------ */
+
+	else if (e->type == KS_EVENT_EXIT) {
+
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s code=%d duration=%lums\n",
 		       ts,
 		       "EXIT",
@@ -137,10 +153,37 @@ if (e->type == KS_EVENT_EXEC) {
 		       e->comm,
 		       e->exit_code,
 		       e->duration_ns / 1000000UL);
+
+		ks_process_remove(e);
+	}
+
+	/* ------------------------------------------------------ */
+	/* NETWORK event                                           */
+	/* ------------------------------------------------------ */
+
+	else if (e->type == KS_EVENT_NETWORK) {
+
+		char dst_ip[INET_ADDRSTRLEN];
+
+		if (inet_ntop(AF_INET,
+		              &e->dst_ipv4,
+		              dst_ip,
+		              sizeof(dst_ip)) == NULL) {
+			strncpy(dst_ip, "unknown", sizeof(dst_ip));
+			dst_ip[sizeof(dst_ip) - 1] = '\0';
+		}
+
+		printf("%-8s %-7s PID=%-6u COMM=%-16s DEST=%s:%u\n",
+		       ts,
+		       "NETWORK",
+		       e->pid,
+		       e->comm,
+		       dst_ip,
+		       ntohs(e->dst_port));
 	}
 
 	fflush(stdout);
-	//ks_process_table_print();
+
 	return 0;
 }
 
