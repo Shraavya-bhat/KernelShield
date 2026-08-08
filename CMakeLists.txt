@@ -100,6 +100,9 @@ add_dependencies(process_exec_skel
 add_executable(kernelshield
     src/main.c
     src/detector/process_table.c
+    src/detector/correlator.c
+    src/detector/rules.c
+    src/detector/state.c
 )
 
 target_include_directories(kernelshield PRIVATE

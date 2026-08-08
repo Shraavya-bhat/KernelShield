@@ -11,6 +11,7 @@
 #include <bpf/libbpf.h>
 #include "../include/ks_event.h"
 #include "detector/process_table.h"
+#include "detector/detector.h"
 #include "process_exec.skel.h"
 
 static struct env {
@@ -85,7 +86,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	(void)ctx;
 	(void)data_sz;
-
+	ks_detector_process_event(e);
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
@@ -205,7 +206,7 @@ int main(int argc, char **argv)
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 	ks_process_table_init();
-	/* Load and verify BPF application */
+	ks_detector_init();
 	skel = process_exec_bpf__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open and load BPF skeleton\n");
