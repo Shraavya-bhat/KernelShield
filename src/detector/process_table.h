@@ -19,9 +19,26 @@ typedef struct {
 
     uint64_t start_time_ns;
     uint64_t end_time_ns;
+    /* Behaviour state */
+    uint64_t last_activity_ns;
+    uint32_t network_count;
+
+    bool spawned_shell;
+    bool made_network_connection;
+
+    /* Multi-stage attack correlation */
+    bool attack_chain_detected;
+
+    int risk_score;
+
+    /* Execution transition history */
+    char previous_comm[TASK_COMM_LEN];
+    char previous_filename[KS_MAX_FILENAME_LEN];
+    uint32_t exec_count;
 
     char comm[TASK_COMM_LEN];
     char filename[KS_MAX_FILENAME_LEN];
+
 } ks_process;
 
 void ks_process_table_init(void);

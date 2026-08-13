@@ -8,7 +8,8 @@ static ks_process process_table[KS_MAX_PROCESSES];
 static int find_slot(uint32_t pid)
 {
     for (int i = 0; i < KS_MAX_PROCESSES; i++) {
-        if (process_table[i].active && process_table[i].pid == pid)
+        if (process_table[i].active &&
+            process_table[i].pid == pid)
             return i;
     }
 
@@ -34,11 +35,73 @@ void ks_process_add(const struct ks_event *event)
 {
     int slot = find_slot(event->pid);
 
-    if (slot == -1)
-        slot = find_free_slot();
+    /*
+     * Existing PID:
+     * This can happen when a process uses exec().
+     *
+     * Example:
+     *
+     * bash PID 1234
+     *     |
+     *     +---- exec() ----> curl PID 1234
+     *
+     * Keep the previous executable so the detector
+     * can understand the transition.
+     */
+    if (slot != -1) {
+
+        strncpy(process_table[slot].previous_comm,
+                process_table[slot].comm,
+                TASK_COMM_LEN - 1);
+
+        process_table[slot].previous_comm[TASK_COMM_LEN - 1] = '\0';
+
+        strncpy(process_table[slot].previous_filename,
+                process_table[slot].filename,
+                KS_MAX_FILENAME_LEN - 1);
+
+        process_table[slot].previous_filename[
+            KS_MAX_FILENAME_LEN - 1
+        ] = '\0';
+
+        process_table[slot].exec_count++;
+
+        process_table[slot].ppid = event->ppid;
+        process_table[slot].uid = event->uid;
+        process_table[slot].gid = event->gid;
+
+        process_table[slot].last_activity_ns =
+            event->timestamp_ns;
+
+        strncpy(process_table[slot].comm,
+                event->comm,
+                TASK_COMM_LEN - 1);
+
+        process_table[slot].comm[TASK_COMM_LEN - 1] = '\0';
+
+        if (event->filename[0] != '\0') {
+
+            strncpy(process_table[slot].filename,
+                    event->filename,
+                    KS_MAX_FILENAME_LEN - 1);
+
+            process_table[slot].filename[
+                KS_MAX_FILENAME_LEN - 1
+            ] = '\0';
+        }
+
+        return;
+    }
+
+    /*
+     * New process.
+     */
+    slot = find_free_slot();
 
     if (slot == -1)
         return;
+
+    memset(&process_table[slot], 0, sizeof(ks_process));
 
     process_table[slot].active = true;
 
@@ -49,7 +112,24 @@ void ks_process_add(const struct ks_event *event)
     process_table[slot].gid = event->gid;
 
     process_table[slot].start_time_ns = event->timestamp_ns;
+    process_table[slot].last_activity_ns = event->timestamp_ns;
     process_table[slot].end_time_ns = 0;
+
+    /*
+     * Initial behavioural state.
+     */
+    process_table[slot].network_count = 0;
+    process_table[slot].spawned_shell = false;
+    process_table[slot].made_network_connection = false;
+    process_table[slot].attack_chain_detected = false;
+    process_table[slot].risk_score = 0;
+
+    /*
+     * Initial execution history.
+     */
+    process_table[slot].exec_count = 1;
+    process_table[slot].previous_comm[0] = '\0';
+    process_table[slot].previous_filename[0] = '\0';
 
     strncpy(process_table[slot].comm,
             event->comm,
@@ -61,7 +141,9 @@ void ks_process_add(const struct ks_event *event)
             event->filename,
             KS_MAX_FILENAME_LEN - 1);
 
-    process_table[slot].filename[KS_MAX_FILENAME_LEN - 1] = '\0';
+    process_table[slot].filename[
+        KS_MAX_FILENAME_LEN - 1
+    ] = '\0';
 }
 
 void ks_process_remove(const struct ks_event *event)
@@ -72,6 +154,7 @@ void ks_process_remove(const struct ks_event *event)
         return;
 
     process_table[slot].end_time_ns = event->timestamp_ns;
+    process_table[slot].last_activity_ns = event->timestamp_ns;
     process_table[slot].active = false;
 }
 

@@ -10,8 +10,8 @@
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "../include/ks_event.h"
-#include "detector/process_table.h"
 #include "detector/detector.h"
+#include "logger.h"
 #include "process_exec.skel.h"
 
 static struct env {
@@ -72,6 +72,9 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static volatile bool exiting = false;
 
+static const char *json_log_path =
+    "/tmp/kernelshield-events.jsonl";
+
 static void sig_handler(int sig)
 {
 	exiting = true;
@@ -86,6 +89,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	(void)ctx;
 	(void)data_sz;
+
+	/* Structured telemetry */
+	ks_logger_event(e);
+
+	/* Detection and correlation */
 	ks_detector_process_event(e);
 	time(&t);
 	tm = localtime(&t);
@@ -96,36 +104,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	/* ------------------------------------------------------ */
 
 	if (e->type == KS_EVENT_EXEC) {
-
-		ks_process_add(e);
-
-		/*
-		 * Check whether this process was spawned by a
-		 * process that normally should not create a shell.
-		 */
-		ks_process *parent = ks_process_find(e->ppid);
-
-		if (parent) {
-			if ((!strcmp(parent->comm, "nginx") ||
-			     !strcmp(parent->comm, "apache2") ||
-			     !strcmp(parent->comm, "python3") ||
-			     !strcmp(parent->comm, "php-fpm")) &&
-			    (!strcmp(e->comm, "bash") ||
-			     !strcmp(e->comm, "sh") ||
-			     !strcmp(e->comm, "dash") ||
-			     !strcmp(e->comm, "zsh"))) {
-
-				printf("\n");
-				printf("=========================================\n");
-				printf("[HIGH] Suspicious Parent-Child Execution\n");
-				printf("Parent : %s (%u)\n",
-				       parent->comm, parent->pid);
-				printf("Child  : %s (%u)\n",
-				       e->comm, e->pid);
-				printf("MITRE  : T1059 Command and Scripting Interpreter\n");
-				printf("=========================================\n\n");
-			}
-		}
 
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
 		       ts,
@@ -155,7 +133,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		       e->exit_code,
 		       e->duration_ns / 1000000UL);
 
-		ks_process_remove(e);
 	}
 
 	/* ------------------------------------------------------ */
@@ -205,8 +182,12 @@ int main(int argc, char **argv)
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
-	ks_process_table_init();
 	ks_detector_init();
+
+	if (ks_logger_init("/tmp/kernelshield-events.jsonl") != 0) {
+		fprintf(stderr, "Failed to initialize KernelShield logger\n");
+		return 1;
+	}
 	skel = process_exec_bpf__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open and load BPF skeleton\n");
@@ -265,6 +246,7 @@ cleanup:
 	/* Clean up */
 	ring_buffer__free(rb);
 	process_exec_bpf__destroy(skel);
+	ks_logger_close();
 
 	return err < 0 ? -err : 0;
 }

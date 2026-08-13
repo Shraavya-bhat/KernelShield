@@ -99,6 +99,7 @@ add_dependencies(process_exec_skel
 # --------------------------------------------------------------------
 add_executable(kernelshield
     src/main.c
+    src/logger.c
     src/detector/process_table.c
     src/detector/correlator.c
     src/detector/rules.c

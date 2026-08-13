@@ -44,9 +44,7 @@ int ks_rule_shell_from_server(const struct ks_event *event)
 /*
  * Rule 2:
  * A shell making an outbound network connection
- * is interesting for correlation.
- *
- * This alone is NOT treated as malicious.
+ * is interesting, but not automatically malicious.
  */
 int ks_rule_network_from_shell(const struct ks_event *event)
 {
@@ -60,6 +58,75 @@ int ks_rule_network_from_shell(const struct ks_event *event)
 
     if (is_shell(process->comm))
         return 1;
+
+    return 0;
+}
+
+/*
+ * Rule 3:
+ * Existing simple correlation.
+ */
+int ks_rule_correlated_behavior(uint32_t pid)
+{
+    ks_process *process = ks_process_find(pid);
+
+    if (!process)
+        return 0;
+
+    return process->spawned_shell &&
+           process->made_network_connection;
+}
+
+/*
+ * Rule 4:
+ * Multi-stage attack chain.
+ *
+ * Example:
+ *
+ *     python3
+ *        |
+ *       bash
+ *        |
+ *       curl
+ *        |
+ *      network
+ *
+ * The network event belongs to curl, so we walk its
+ * parent chain looking for a shell that was spawned
+ * by a server process.
+ */
+int ks_rule_attack_chain(uint32_t pid)
+{
+    ks_process *process = ks_process_find(pid);
+
+    if (!process)
+        return 0;
+
+    /*
+     * Walk up to three ancestors.
+     *
+     * Current process -> parent -> grandparent -> ...
+     */
+    for (int depth = 0; depth < 4; depth++) {
+
+        if (process->ppid == 0)
+            break;
+
+        ks_process *parent =
+            ks_process_find(process->ppid);
+
+        if (!parent)
+            break;
+
+        /*
+         * The parent is a shell that was previously
+         * identified as being spawned by a server.
+         */
+        if (parent->spawned_shell)
+            return 1;
+
+        process = parent;
+    }
 
     return 0;
 }
