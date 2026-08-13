@@ -18,7 +18,10 @@ typedef struct {
     uint32_t dst_ipv4;
     uint16_t dst_port;
 
-    uint64_t timestamp_ns;
+    uint64_t first_seen_ns;
+    uint64_t last_seen_ns;
+
+    uint32_t network_count;
 } ks_network_state;
 
 void ks_state_init(void);
