@@ -125,7 +125,9 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 
     if (addr.sin_family != 2)
         return 0;
-
+	
+    if (addr.sin_port == 0)
+    return 0;
     e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e)
         return 0;
