@@ -283,7 +283,6 @@ cleanup:
 	/* Clean up */
 	ring_buffer__free(rb);
 	process_exec_bpf__destroy(skel);
-	ks_detector_shutdown();
 	ks_logger_close();
 
 	return err < 0 ? -err : 0;

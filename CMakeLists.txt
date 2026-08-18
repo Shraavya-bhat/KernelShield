@@ -94,6 +94,7 @@ add_executable(kernelshield
     src/detector/correlator.c
     src/detector/rules.c
     src/detector/state.c
+    src/detector/alert.c
 )
 
 target_include_directories(kernelshield PRIVATE
