@@ -206,19 +206,6 @@ void ks_detector_process_event(const struct ks_event *event)
              */
             add_risk(process, 40);
 
-            emit_detection_alert(
-                event,
-                "server_to_shell",
-                "behavioral",
-                "high",
-                "A server process spawned a shell",
-                "T1059",
-                0,
-                NULL,
-                0,
-                1
-            );
-
             printf("\n");
             printf("============================================\n");
             printf("[HIGH] Suspicious Server-to-Shell Execution\n");
@@ -289,28 +276,6 @@ void ks_detector_process_event(const struct ks_event *event)
              */
             add_risk(process, 40);
 
-            char chain_ip[INET_ADDRSTRLEN] = "unknown";
-
-            inet_ntop(
-                AF_INET,
-                &event->dst_ipv4,
-                chain_ip,
-                sizeof(chain_ip)
-            );
-
-            emit_detection_alert(
-                event,
-                "multi_stage_attack",
-                "correlation",
-                "critical",
-                "Correlated server-to-shell-to-network behavior detected",
-                "T1059",
-                1,
-                chain_ip,
-                ntohs(event->dst_port),
-                3
-            );
-
             printf("\n");
             printf("============================================\n");
             printf("[CRITICAL] Multi-Stage Attack Chain Detected\n");
@@ -344,19 +309,6 @@ void ks_detector_process_event(const struct ks_event *event)
                       &event->dst_ipv4,
                       ip,
                       sizeof(ip));
-
-            emit_detection_alert(
-                event,
-                "shell_network_activity",
-                "network",
-                "high",
-                "Shell process generated outbound network activity",
-                "T1059",
-                1,
-                ip,
-                ntohs(event->dst_port),
-                2
-            );
 
             printf("\n");
             printf("============================================\n");
