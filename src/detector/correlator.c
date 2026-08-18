@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <string.h>
 
 #include "detector.h"
 #include "rules.h"
