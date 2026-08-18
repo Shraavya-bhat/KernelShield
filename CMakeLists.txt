@@ -39,16 +39,7 @@ ExternalProject_Add(libbpf
 
 # --------------------------------------------------------------------
 # Build bpftool
-# --------------------------------------------------------------------
-ExternalProject_Add(bpftool
-    PREFIX bpftool
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libbpf-bootstrap/bpftool/src
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND make bootstrap
-        OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/bpftool/
-    BUILD_IN_SOURCE TRUE
-    INSTALL_COMMAND ""
-)
+# -------------------------------------------------------------------
 
 # --------------------------------------------------------------------
 # Detect architecture
@@ -67,7 +58,7 @@ endif()
 # BpfObject configuration
 # --------------------------------------------------------------------
 set(BPFOBJECT_BPFTOOL_EXE
-    ${CMAKE_CURRENT_BINARY_DIR}/bpftool/bootstrap/bpftool
+    /usr/sbin/bpftool
 )
 
 set(BPFOBJECT_VMLINUX_H
@@ -91,7 +82,6 @@ bpf_object(process_exec src/ebpf/process_exec.bpf.c)
 
 add_dependencies(process_exec_skel
     libbpf
-    bpftool
 )
 
 # --------------------------------------------------------------------
@@ -99,7 +89,12 @@ add_dependencies(process_exec_skel
 # --------------------------------------------------------------------
 add_executable(kernelshield
     src/main.c
+    src/logger.c
     src/detector/process_table.c
+    src/detector/correlator.c
+    src/detector/rules.c
+    src/detector/state.c
+    src/detector/alert.c
 )
 
 target_include_directories(kernelshield PRIVATE

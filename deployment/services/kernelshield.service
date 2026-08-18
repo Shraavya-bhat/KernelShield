@@ -1,0 +1,21 @@
+[Unit]
+Description=KernelShield eBPF Runtime Security Monitor
+Documentation=https://github.com/thrishajogi/KernelShield
+After=network.target
+
+[Service]
+Type=simple
+
+ExecStart=/opt/kernelshield/kernelshield
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
