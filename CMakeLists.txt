@@ -39,7 +39,23 @@ ExternalProject_Add(libbpf
 
 # --------------------------------------------------------------------
 # Build bpftool
+<<<<<<< HEAD
 # -------------------------------------------------------------------
+=======
+# --------------------------------------------------------------------
+ExternalProject_Add(bpftool
+    PREFIX bpftool
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libbpf-bootstrap/bpftool/src
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND make bootstrap
+    OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/bpftool/
+    HOSTCC=clang
+    HOSTLD=ld.lld
+    HOSTAR=llvm-ar
+    BUILD_IN_SOURCE TRUE
+    INSTALL_COMMAND ""
+)
+>>>>>>> shraavya/rebuild
 
 # --------------------------------------------------------------------
 # Detect architecture

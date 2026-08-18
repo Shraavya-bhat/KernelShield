@@ -24,3 +24,4 @@ Makefile
 
 # OS
 .DS_Store
+logs/
