@@ -8,7 +8,14 @@
 
 #define KS_MAX_PROCESSES 8192
 
+/*
+ * Behavioral evidence maintained for every active process.
+ *
+ * This is deliberately independent of the final alert schema.
+ * The detector can evolve internally without changing ks_alert.
+ */
 typedef struct {
+
     bool active;
 
     uint32_t pid;
@@ -19,22 +26,54 @@ typedef struct {
 
     uint64_t start_time_ns;
     uint64_t end_time_ns;
-    /* Behaviour state */
     uint64_t last_activity_ns;
-    uint32_t network_count;
 
+    /*
+     * Behavioral counters.
+     */
+    uint32_t exec_count;
+    uint32_t network_count;
+    uint32_t file_open_count;
+    uint32_t file_write_count;
+    uint32_t file_create_count;
+    uint32_t privilege_event_count;
+
+    /*
+     * Temporal evidence.
+     */
+    uint64_t last_exec_ns;
+    uint64_t last_network_ns;
+    uint64_t last_file_write_ns;
+    uint64_t last_privilege_ns;
+
+    /*
+     * Behavioral transitions.
+     */
     bool spawned_shell;
     bool made_network_connection;
+    bool wrote_file;
+    bool created_file;
+    bool privilege_transition;
 
-    /* Multi-stage attack correlation */
+    /*
+     * Correlation state.
+     */
     bool attack_chain_detected;
+    bool alert_emitted;
 
-    int risk_score;
+    /*
+     * Internal behavioral score.
+     *
+     * This is NOT exported as a formal risk score in ks_alert.
+     * It is an internal decision signal.
+     */
+    int behavioral_score;
 
-    /* Execution transition history */
+    /*
+     * Execution transition history.
+     */
     char previous_comm[TASK_COMM_LEN];
     char previous_filename[KS_MAX_FILENAME_LEN];
-    uint32_t exec_count;
 
     char comm[TASK_COMM_LEN];
     char filename[KS_MAX_FILENAME_LEN];
