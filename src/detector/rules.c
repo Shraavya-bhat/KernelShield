@@ -103,9 +103,17 @@ int ks_rule_attack_chain(uint32_t pid)
         return 0;
 
     /*
-     * Walk up to three ancestors.
-     *
-     * Current process -> parent -> grandparent -> ...
+     * A shell may exec() into another program such as curl,
+     * keeping the same PID. In that case the suspicious shell
+     * is preserved in previous_comm rather than the parent chain.
+     */
+    if (process->spawned_shell ||
+        is_shell(process->previous_comm))
+        return 1;
+
+    /*
+     * Walk up to three ancestors looking for a process that was
+     * identified as a shell spawned by a server.
      */
     for (int depth = 0; depth < 4; depth++) {
 
@@ -118,10 +126,6 @@ int ks_rule_attack_chain(uint32_t pid)
         if (!parent)
             break;
 
-        /*
-         * The parent is a shell that was previously
-         * identified as being spawned by a server.
-         */
         if (parent->spawned_shell)
             return 1;
 
