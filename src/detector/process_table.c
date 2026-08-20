@@ -74,6 +74,14 @@ void ks_process_add(const struct ks_event *event)
 
         p->exec_count++;
 
+        /*
+         * Continue the current behavioral episode.
+         * Episode rollover is handled by the correlator when
+         * activity falls outside the temporal window.
+         */
+        p->episode_last_event_ns = event->timestamp_ns;
+        p->episode_event_count++;
+
         p->ppid = event->ppid;
         p->uid = event->uid;
         p->gid = event->gid;
@@ -130,6 +138,15 @@ void ks_process_add(const struct ks_event *event)
     p->last_exec_ns = event->timestamp_ns;
 
     p->exec_count = 1;
+
+    /*
+     * Start the first behavioral episode with the process.
+     */
+    p->episode_id = 1;
+    p->episode_start_ns = event->timestamp_ns;
+    p->episode_last_event_ns = event->timestamp_ns;
+    p->episode_event_count = 1;
+    p->episode_score = 0;
 
     strncpy(
         p->comm,

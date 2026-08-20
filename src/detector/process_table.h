@@ -70,6 +70,18 @@ typedef struct {
     int behavioral_score;
 
     /*
+     * Behavioral episode state.
+     *
+     * An episode groups temporally related activity from the
+     * same process lineage into one detection unit.
+     */
+    uint32_t episode_id;
+    uint64_t episode_start_ns;
+    uint64_t episode_last_event_ns;
+    uint32_t episode_event_count;
+    uint32_t episode_score;
+
+    /*
      * Execution transition history.
      */
     char previous_comm[TASK_COMM_LEN];
