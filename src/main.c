@@ -73,7 +73,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 static volatile bool exiting = false;
 
 static const char *json_log_path =
-    "/home/shraavya/KernelShield/logs/kernelshield-events.jsonl";
+    "logs/kernelshield-events.jsonl";
 
 static void sig_handler(int sig)
 {
@@ -221,7 +221,7 @@ int main(int argc, char **argv)
 	signal(SIGTERM, sig_handler);
 	ks_detector_init();
 
-	if (ks_logger_init("/home/shraavya/KernelShield/logs/kernelshield-events.jsonl") != 0) {
+	if (ks_logger_init("logs/kernelshield-events.jsonl") != 0) {
 		fprintf(stderr, "Failed to initialize KernelShield logger\n");
 		return 1;
 	}

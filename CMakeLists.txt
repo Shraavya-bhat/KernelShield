@@ -39,9 +39,7 @@ ExternalProject_Add(libbpf
 
 # --------------------------------------------------------------------
 # Build bpftool
-<<<<<<< HEAD
 # -------------------------------------------------------------------
-=======
 # --------------------------------------------------------------------
 ExternalProject_Add(bpftool
     PREFIX bpftool
@@ -55,7 +53,6 @@ ExternalProject_Add(bpftool
     BUILD_IN_SOURCE TRUE
     INSTALL_COMMAND ""
 )
->>>>>>> shraavya/rebuild
 
 # --------------------------------------------------------------------
 # Detect architecture
