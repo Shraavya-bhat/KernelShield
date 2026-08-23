@@ -20,19 +20,26 @@
 #define KS_BEHAVIOR_WINDOW_NS 30000000000ULL
 
 /*
- * Add behavioral evidence.
+ * Add behavioral evidence to the current episode.
+ *
+ * The score is bounded to 100 so a noisy process cannot
+ * accumulate an unlimited risk value.
  */
 static void add_behavior_score(
     ks_process *process,
     int points)
 {
-    if (!process)
+    if (!process || points <= 0)
         return;
 
-    process->behavioral_score += points;
+    process->episode_score +=
+        (uint32_t)points;
 
-    if (process->behavioral_score > 100)
-        process->behavioral_score = 100;
+    if (process->episode_score > 100)
+        process->episode_score = 100;
+
+    process->behavioral_score =
+        (int)process->episode_score;
 }
 
 /*
@@ -54,20 +61,105 @@ static bool within_window(
 }
 
 /*
- * Convert behavioral evidence into a severity.
+ * Ensure that the process has a valid behavioral episode.
+ *
+ * Activity separated by more than the correlation window
+ * starts a new episode and clears the previous score.
+ */
+static void ensure_episode(
+    ks_process *process,
+    uint64_t timestamp_ns)
+{
+    if (!process)
+        return;
+
+    /*
+     * First event for an episode.
+     */
+    if (process->episode_start_ns == 0) {
+
+        process->episode_id = 1;
+
+        process->episode_start_ns =
+            timestamp_ns;
+
+        process->episode_last_event_ns =
+            timestamp_ns;
+
+        process->episode_event_count = 1;
+
+        process->episode_score = 0;
+
+        process->behavioral_score = 0;
+
+        return;
+    }
+
+    /*
+     * Activity outside the temporal window starts
+     * a new independent behavioral episode.
+     */
+    if (!within_window(
+            timestamp_ns,
+            process->episode_last_event_ns)) {
+
+        process->episode_id++;
+
+        process->episode_start_ns =
+            timestamp_ns;
+
+        process->episode_event_count = 0;
+
+        process->episode_score = 0;
+
+        process->behavioral_score = 0;
+    }
+
+    process->episode_last_event_ns =
+        timestamp_ns;
+
+    process->episode_event_count++;
+}
+
+/*
+ * Convert accumulated behavioral evidence into severity.
+ *
+ * These thresholds describe the strength of correlated
+ * evidence, not a probability of compromise.
  */
 static const char *severity_for_score(int score)
 {
-    if (score >= 80)
+    if (score >= 85)
         return "critical";
 
-    if (score >= 50)
+    if (score >= 70)
         return "high";
 
-    if (score >= 30)
+    if (score >= 50)
         return "medium";
 
     return "low";
+}
+
+/*
+ * Convert accumulated evidence into a deterministic
+ * confidence value.
+ */
+static uint16_t confidence_for_score(int score)
+{
+    if (score >= 85)
+        return 95;
+
+    if (score >= 70)
+        return 85;
+
+    if (score >= 50)
+        return 70;
+
+    if (score >= 30)
+        return 50;
+
+    return 25;
 }
 
 /*
@@ -183,6 +275,23 @@ static void emit_detection_alert(
     alert.event_count =
         event_count;
 
+    /*
+     * Attach the current behavioral episode assessment.
+     */
+    ks_process *assessment_process =
+        ks_process_find(event->pid);
+
+    if (assessment_process) {
+
+        alert.risk_score =
+            (uint16_t)assessment_process->episode_score;
+
+        alert.confidence =
+            confidence_for_score(
+                assessment_process->episode_score
+            );
+    }
+
     if (ks_alert_write(&alert) != 0) {
 
         fprintf(
@@ -228,6 +337,11 @@ void ks_detector_process_event(
         if (!process)
             return;
 
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
         process->last_activity_ns =
             event->timestamp_ns;
 
@@ -260,24 +374,18 @@ void ks_detector_process_event(
 
             process->spawned_shell = true;
 
+            /*
+             * Server -> shell is suspicious evidence,
+             * not sufficient proof by itself.
+             */
             add_behavior_score(process, 25);
 
-            /*
-             * Do not immediately terminate anything here.
-             *
-             * Response Engine owns mitigation.
-             */
-            emit_detection_alert(
-                event,
-                "server_to_shell",
-                "behavioral",
-                "high",
-                "Server process spawned a shell",
-                "T1059",
-                0,
-                NULL,
-                0,
-                process->exec_count
+            printf(
+                "[BEHAVIOR] PID=%u server-to-shell evidence "
+                "score=%u episode=%u\\n",
+                process->pid,
+                process->episode_score,
+                process->episode_id
             );
         }
 
@@ -298,6 +406,11 @@ void ks_detector_process_event(
 
         if (!process)
             return;
+
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
 
         process->last_activity_ns =
             event->timestamp_ns;
@@ -408,6 +521,11 @@ void ks_detector_process_event(
         if (!process)
             return;
 
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
         process->last_activity_ns =
             event->timestamp_ns;
 
@@ -475,6 +593,11 @@ void ks_detector_process_event(
         if (!process)
             return;
 
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
         process->privilege_event_count++;
         process->privilege_transition = true;
         process->last_privilege_ns =
@@ -496,20 +619,23 @@ void ks_detector_process_event(
             add_behavior_score(process, 15);
         }
 
-        emit_detection_alert(
-            event,
-            "privilege_transition",
-            "behavioral",
-            severity_for_score(
-                process->behavioral_score
-            ),
-            "Process performed a privilege transition",
-            "T1548",
-            0,
-            NULL,
-            0,
-            process->privilege_event_count
-        );
+        if (process->episode_score >= 50) {
+
+            emit_detection_alert(
+                event,
+                "privilege_transition",
+                "behavioral",
+                severity_for_score(
+                    process->episode_score
+                ),
+                "Privilege transition correlated with behavioral activity",
+                "T1548",
+                0,
+                NULL,
+                0,
+                process->episode_event_count
+            );
+        }
 
         return;
     }
