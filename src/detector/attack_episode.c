@@ -298,10 +298,19 @@ static void apply_event(
 
     case KS_EVENT_NETWORK:
 
-        episode->evidence_mask |=
-            EVIDENCE_NETWORK;
+        /*
+         * Network activity is common for browsers, DNS resolvers
+         * and other normal applications. Count network evidence
+         * once per episode so repeated connections cannot inflate
+         * the risk score indefinitely.
+         */
+        if (!(episode->evidence_mask & EVIDENCE_NETWORK)) {
 
-        episode->score += 20;
+            episode->evidence_mask |=
+                EVIDENCE_NETWORK;
+
+            episode->score += 20;
+        }
 
         update_stage(
             episode,
@@ -315,11 +324,13 @@ static void apply_event(
     case KS_EVENT_FILE:
 
         /*
-         * File activity alone is common during normal system,
-         * browser and application operation.
+         * File activity alone is common during normal application
+         * behavior. Treat it as payload evidence only when the
+         * episode already contains shell or network activity.
          *
-         * Treat it as payload evidence only when the same episode
-         * already contains suspicious execution or network behavior.
+         * Count this evidence once per episode so browser caches,
+         * databases and repeated application writes cannot push
+         * the risk score to 100.
          */
         if (event->file_operation ==
                 KS_FILE_WRITE ||
@@ -330,9 +341,11 @@ static void apply_event(
             event->file_operation ==
                 KS_FILE_DELETE) {
 
-            if (episode->evidence_mask &
+            if ((episode->evidence_mask &
                     (EVIDENCE_SHELL |
-                     EVIDENCE_NETWORK)) {
+                     EVIDENCE_NETWORK)) &&
+                !(episode->evidence_mask &
+                    EVIDENCE_FILE)) {
 
                 episode->evidence_mask |=
                     EVIDENCE_FILE;
