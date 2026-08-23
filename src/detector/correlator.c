@@ -649,10 +649,66 @@ void ks_detector_process_event(
                 add_behavior_score(process, 15);
             }
 
+            /*
+             * Suspicious file creation in /tmp.
+             */
+            if (strstr(event->file_path, "/tmp/") != NULL) {
+
+                add_behavior_score(process, 25);
+
+                if (process->episode_score >= 50 &&
+                    !process->alert_emitted) {
+
+                    process->alert_emitted = true;
+
+                    emit_detection_alert(
+                        event,
+                        "suspicious_file_activity",
+                        "behavioral",
+                        severity_for_score(
+                            process->episode_score
+                        ),
+                        "Process execution followed by suspicious file creation",
+                        "T1105",
+                        0,
+                        NULL,
+                        0,
+                        process->episode_event_count
+                    );
+                }
+            }
+
             break;
 
         default:
             break;
+        }
+
+        /*
+         * Suspicious file activity correlation.
+         * Emit one alert per process episode when file
+         * modification follows process activity.
+         */
+        if (!process->alert_emitted &&
+            process->episode_score >= 30 &&
+            (process->created_file || process->wrote_file)) {
+
+            process->alert_emitted = true;
+
+            emit_detection_alert(
+                event,
+                "suspicious_file_activity",
+                "behavioral",
+                severity_for_score(
+                    process->episode_score
+                ),
+                "Process execution correlated with suspicious file modification activity",
+                "T1105",
+                process->made_network_connection ? 1 : 0,
+                "",
+                0,
+                process->episode_event_count
+            );
         }
 
         return;
@@ -676,28 +732,59 @@ void ks_detector_process_event(
             event->timestamp_ns
         );
 
+        process->last_activity_ns =
+            event->timestamp_ns;
+
         process->privilege_event_count++;
         process->privilege_transition = true;
         process->last_privilege_ns =
             event->timestamp_ns;
 
         /*
-         * Privilege transitions are significant evidence,
-         * particularly when close to execution/network activity.
+         * A privilege transition alone is NOT considered an
+         * attack. Normal sudo, cron and service activity can
+         * legitimately change privileges.
+         *
+         * Only increase risk when privilege activity is part
+         * of a larger suspicious behavior chain.
          */
-        add_behavior_score(process, 20);
+        bool suspicious_context = false;
 
-        if (within_window(
-                event->timestamp_ns,
-                process->last_exec_ns) ||
-            within_window(
-                event->timestamp_ns,
-                process->last_network_ns)) {
+        if (process->made_network_connection ||
+            process->wrote_file ||
+            process->created_file ||
+            process->spawned_shell ||
+            process->attack_chain_detected) {
 
-            add_behavior_score(process, 15);
+            suspicious_context = true;
         }
 
-        if (process->episode_score >= 50) {
+        if (suspicious_context) {
+
+            add_behavior_score(process, 25);
+
+            /*
+             * Stronger evidence when the privilege transition
+             * occurs close to other suspicious activity.
+             */
+            if (within_window(
+                    event->timestamp_ns,
+                    process->last_network_ns) ||
+                within_window(
+                    event->timestamp_ns,
+                    process->last_file_write_ns)) {
+
+                add_behavior_score(process, 20);
+            }
+        }
+
+        /*
+         * Do not alert for ordinary privilege transitions.
+         * Require both suspicious context and substantial
+         * accumulated episode evidence.
+         */
+        if (suspicious_context &&
+            process->episode_score >= 70) {
 
             emit_detection_alert(
                 event,
@@ -706,7 +793,7 @@ void ks_detector_process_event(
                 severity_for_score(
                     process->episode_score
                 ),
-                "Privilege transition correlated with behavioral activity",
+                "Privilege transition correlated with network, file, shell, or multi-stage behavioral evidence",
                 "T1548",
                 0,
                 NULL,

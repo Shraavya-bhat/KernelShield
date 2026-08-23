@@ -3,7 +3,7 @@
 
 #include "ks_alert.h"
 
-#define KS_ALERT_JSONL_PATH "/tmp/kernelshield-alerts.jsonl"
+#define KS_ALERT_JSONL_PATH "/var/log/kernelshield/alerts.jsonl"
 
 static FILE *alert_fp = NULL;
 
@@ -157,7 +157,9 @@ int ks_alert_write(const ks_alert *alert)
         "\"has_network\":%u,"
         "\"destination_ip\":\"%s\","
         "\"destination_port\":%u,"
-        "\"event_count\":%u"
+        "\"event_count\":%u,"
+        "\"risk_score\":%u,"
+        "\"confidence\":%u"
         "}\n",
 
         alert->schema_version,
@@ -182,7 +184,9 @@ int ks_alert_write(const ks_alert *alert)
         destination_ip,
         alert->destination_port,
 
-        alert->event_count
+        alert->event_count,
+        alert->risk_score,
+        alert->confidence
     );
 
     fflush(alert_fp);
