@@ -105,6 +105,7 @@ add_executable(kernelshield
     src/logger.c
     src/detector/process_table.c
     src/detector/correlator.c
+    src/detector/attack_episode.c
     src/detector/rules.c
     src/detector/state.c
     src/detector/alert.c

@@ -7,6 +7,7 @@
 #include "state.h"
 #include "process_table.h"
 #include "ks_alert.h"
+#include "attack_episode.h"
 
 /*
  * Temporal correlation window.
@@ -303,6 +304,7 @@ static void emit_detection_alert(
 
 void ks_detector_init(void)
 {
+    ks_attack_episode_init();
     ks_state_init();
     ks_process_table_init();
 
@@ -321,6 +323,82 @@ void ks_detector_process_event(
 {
     if (!event)
         return;
+
+    /*
+     * High-level attack episode reconstruction.
+     *
+     * Every event observed by KernelShield is also evaluated
+     * as part of a multi-stage attack episode.
+     */
+    ks_attack_episode *attack_episode =
+        ks_attack_episode_process_event(event);
+
+    if (attack_episode) {
+
+        static uint32_t last_episode_id = 0;
+        static int last_score = -1;
+        static ks_attack_stage last_stage = KS_STAGE_UNKNOWN;
+
+        /*
+         * Only show an attack update when the episode contains
+         * meaningful suspicious behavior.
+         */
+        bool suspicious =
+            attack_episode->score >= 20 ||
+            attack_episode->current_stage >=
+                KS_STAGE_SUSPICIOUS_SPAWN;
+
+        if (suspicious) {
+
+            bool meaningful_change = false;
+
+            if (attack_episode->id != last_episode_id)
+                meaningful_change = true;
+
+            if (attack_episode->current_stage != last_stage)
+                meaningful_change = true;
+
+            if ((attack_episode->score / 10) !=
+                (last_score / 10))
+                meaningful_change = true;
+
+            if (meaningful_change) {
+
+                printf(
+                    "\n"
+                    "========== KERNELSHIELD ATTACK UPDATE ==========\n"
+                    "Episode ID       : KS-%06u\n"
+                    "Root PID         : %u\n"
+                    "Process          : %s\n"
+                    "Events Seen      : %u\n"
+                    "Risk Score       : %d/100\n"
+                    "Current Stage    : %s\n"
+                    "Predicted Next   : %s\n"
+                    "Containment      : %s\n"
+                    "================================================\n\n",
+
+                    attack_episode->id,
+                    attack_episode->root_pid,
+                    attack_episode->last_process,
+                    attack_episode->event_count,
+                    attack_episode->score > 100 ?
+                        100 : attack_episode->score,
+                    ks_attack_stage_name(
+                        attack_episode->current_stage
+                    ),
+                    ks_attack_stage_name(
+                        attack_episode->predicted_next_stage
+                    ),
+                    attack_episode->containment_recommended ?
+                        "RECOMMENDED" : "MONITOR"
+                );
+
+                last_episode_id = attack_episode->id;
+                last_score = attack_episode->score;
+                last_stage = attack_episode->current_stage;
+            }
+        }
+    }
 
     /*
      * ======================================================

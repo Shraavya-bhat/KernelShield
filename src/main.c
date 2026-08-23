@@ -188,13 +188,25 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			break;
 		}
 
-		printf("%-8s %-7s PID=%-6u COMM=%-16s OP=%-8s PATH=%s\n",
-		       ts,
-		       "FILE",
-		       e->pid,
-		       e->comm,
-		       operation,
-		       e->file_path);
+        /*
+         * Reduce terminal noise from normal system activity.
+         * Keep suspicious or user-controlled file activity visible.
+         */
+        if (strstr(e->file_path, "/tmp/") ||
+            strstr(e->file_path, "/home/") ||
+            strstr(e->file_path, "/etc/") ||
+            e->file_operation == KS_FILE_RENAME ||
+            e->file_operation == KS_FILE_DELETE ||
+            e->file_operation == KS_FILE_EXECUTE) {
+
+            printf("%-8s %-7s PID=%-6u COMM=%-16s OP=%-8s PATH=%s\n",
+                   ts,
+                   "FILE",
+                   e->pid,
+                   e->comm,
+                   operation,
+                   e->file_path);
+        }
 	}
 
 	fflush(stdout);
