@@ -2,12 +2,16 @@
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
 #include <signal.h>
+
+#include <arpa/inet.h>
+#include <string.h>
 #include <stdio.h>
 #include <time.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "../include/ks_event.h"
-#include "detector/process_table.h"
+#include "detector/detector.h"
+#include "logger.h"
 #include "process_exec.skel.h"
 
 static struct env {
@@ -68,6 +72,9 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static volatile bool exiting = false;
 
+static const char *json_log_path =
+    "logs/kernelshield-events.jsonl";
+
 static void sig_handler(int sig)
 {
 	exiting = true;
@@ -83,16 +90,21 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)ctx;
 	(void)data_sz;
 
+	/* Structured telemetry */
+	ks_logger_event(e);
+
+	/* Detection and correlation */
+	ks_detector_process_event(e);
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	if (e->type == KS_EVENT_EXEC)
-    ks_process_add(e);
-else if (e->type == KS_EVENT_EXIT)
-    ks_process_remove(e);
+	/* ------------------------------------------------------ */
+	/* EXEC event                                              */
+	/* ------------------------------------------------------ */
 
-if (e->type == KS_EVENT_EXIT) {
+	if (e->type == KS_EVENT_EXEC) {
+
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s %s\n",
 		       ts,
 		       "EXEC",
@@ -102,7 +114,14 @@ if (e->type == KS_EVENT_EXIT) {
 		       e->gid,
 		       e->comm,
 		       e->filename);
-	} else if (e->type == KS_EVENT_EXIT) {
+	}
+
+	/* ------------------------------------------------------ */
+	/* EXIT event                                              */
+	/* ------------------------------------------------------ */
+
+	else if (e->type == KS_EVENT_EXIT) {
+
 		printf("%-8s %-6s %-6u %-6u %-6u %-6u %-16s code=%d duration=%lums\n",
 		       ts,
 		       "EXIT",
@@ -113,10 +132,73 @@ if (e->type == KS_EVENT_EXIT) {
 		       e->comm,
 		       e->exit_code,
 		       e->duration_ns / 1000000UL);
+
+	}
+
+	/* ------------------------------------------------------ */
+	/* NETWORK event                                           */
+	/* ------------------------------------------------------ */
+
+	else if (e->type == KS_EVENT_NETWORK) {
+
+		char dst_ip[INET_ADDRSTRLEN];
+
+		if (inet_ntop(AF_INET,
+		              &e->dst_ipv4,
+		              dst_ip,
+		              sizeof(dst_ip)) == NULL) {
+			strncpy(dst_ip, "unknown", sizeof(dst_ip));
+			dst_ip[sizeof(dst_ip) - 1] = '\0';
+		}
+
+		printf("%-8s %-7s PID=%-6u COMM=%-16s DEST=%s:%u\n",
+		       ts,
+		       "NETWORK",
+		       e->pid,
+		       e->comm,
+		       dst_ip,
+		       ntohs(e->dst_port));
+	}
+
+
+	else if (e->type == KS_EVENT_FILE) {
+
+		const char *operation = "UNKNOWN";
+
+		switch (e->file_operation) {
+		case KS_FILE_OPEN:
+			operation = "OPEN";
+			break;
+		case KS_FILE_WRITE:
+			operation = "WRITE";
+			break;
+		case KS_FILE_CREATE:
+			operation = "CREATE";
+			break;
+		case KS_FILE_RENAME:
+			operation = "RENAME";
+			break;
+		case KS_FILE_DELETE:
+			operation = "DELETE";
+			break;
+		case KS_FILE_EXECUTE:
+			operation = "EXECUTE";
+			break;
+		default:
+			break;
+		}
+
+		printf("%-8s %-7s PID=%-6u COMM=%-16s OP=%-8s PATH=%s\n",
+		       ts,
+		       "FILE",
+		       e->pid,
+		       e->comm,
+		       operation,
+		       e->file_path);
 	}
 
 	fflush(stdout);
-	ks_process_table_print();
+
 	return 0;
 }
 
@@ -137,8 +219,12 @@ int main(int argc, char **argv)
 	/* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
-	ks_process_table_init();
-	/* Load and verify BPF application */
+	ks_detector_init();
+
+	if (ks_logger_init("logs/kernelshield-events.jsonl") != 0) {
+		fprintf(stderr, "Failed to initialize KernelShield logger\n");
+		return 1;
+	}
 	skel = process_exec_bpf__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open and load BPF skeleton\n");
@@ -197,6 +283,8 @@ cleanup:
 	/* Clean up */
 	ring_buffer__free(rb);
 	process_exec_bpf__destroy(skel);
+	ks_detector_shutdown();
+	ks_logger_close();
 
 	return err < 0 ? -err : 0;
 }

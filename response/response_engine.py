@@ -1,70 +1,135 @@
 import json
+import os
+
 from process_killer import terminate_process
 from logger import write_log
-from config import PROTECTED_PIDS
+from config import PROTECTED_PIDS, AUTO_RESPONSE_SEVERITIES
 from firewall import block_ip
 
-def decide_response(attack_type):
 
-    if attack_type == "reverse_shell":
-        return "Terminate Process"
+def decide_response(detection):
+    """
+    Determine response from the KernelShield alert.
 
-    elif attack_type == "privilege_escalation":
-        return "Kill Process + Alert"
+    Detection is evidence produced by the native detector.
+    """
 
-    elif attack_type == "suspicious_process":
-        return "Terminate Process"
+    attack_type = detection.get("attack_type", "")
+    severity = detection.get("severity", "").lower()
 
-    else:
-        return "No Action"
+    # Strong multi-stage correlation.
+    if (
+        attack_type == "multi_stage_attack"
+        and severity in AUTO_RESPONSE_SEVERITIES
+    ):
+        return "Terminate Process + Block IP"
+
+    # A shell spawned from a server is suspicious, but
+    # should not automatically kill the process by itself.
+    if attack_type == "server_to_shell":
+        return "Alert Only"
+
+    # Shell network activity alone is evidence, not
+    # sufficient proof for destructive response.
+    if attack_type == "shell_network_activity":
+        return "Alert Only"
+
+    return "No Action"
 
 
-def receive_detection():
+def receive_detection(detection):
+    """
+    Process one KernelShield detection.
+    """
 
-    with open("detection.json", "r") as file:
-        detection = json.load(file)
+    attack_type = detection.get("attack_type", "unknown")
+    severity = detection.get("severity", "unknown").lower()
 
-    attack_type = detection["attack_type"]
-    pid = detection["pid"]
+    pid = int(detection.get("pid", 0))
 
-    has_network = detection.get("has_network", 0)
-    destination_ip = detection.get("destination_ip", "")
-    destination_port = detection.get("destination_port", 0)
+    has_network = int(
+        detection.get("has_network", 0)
+    )
 
-    action = decide_response(attack_type)
+    destination_ip = detection.get(
+        "destination_ip", ""
+    )
 
-    print("========== KernelShield ==========")
+    destination_port = int(
+        detection.get("destination_port", 0)
+    )
+
+    action = decide_response(detection)
+
+    print()
+    print("========== KernelShield Response ==========")
     print(f"Attack Type : {attack_type}")
+    print(f"Severity    : {severity}")
     print(f"PID         : {pid}")
     print(f"Action      : {action}")
 
-    status = "NOT EXECUTED"
+    status = "NOT_EXECUTED"
 
-    if pid in PROTECTED_PIDS:
+    if pid <= 0:
 
-        print("[WARNING] Protected system process. Response cancelled.")
+        status = "INVALID_PID"
+
+    elif pid in PROTECTED_PIDS:
+
+        print("[SAFETY] Protected system process.")
+        print("[SAFETY] Response cancelled.")
 
         status = "BLOCKED"
 
-    elif action == "Terminate Process":
+    elif action.startswith("Terminate"):
 
-        success = terminate_process(pid)
+        if pid == os.getpid():
 
-        if success:
-            status = "SUCCESS"
+            print("[SAFETY] Refusing to terminate response engine.")
+            status = "BLOCKED"
+
         else:
-            status = "FAILED"
 
-    if has_network and destination_ip:
+            success = terminate_process(pid)
 
-        print(f"[NETWORK] Destination detected: {destination_ip}:{destination_port}")
+            if success:
+                status = "SUCCESS"
+            else:
+                status = "FAILED"
 
-        firewall_success = block_ip(destination_ip)
+    elif action == "Alert Only":
+
+        status = "ALERT_ONLY"
+
+    else:
+
+        status = "NO_ACTION"
+
+    # Network containment is only performed when the
+    # detector explicitly associates an IP with the alert.
+    if (
+        has_network
+        and destination_ip
+        and action == "Terminate Process + Block IP"
+    ):
+
+        print(
+            f"[NETWORK] Destination: "
+            f"{destination_ip}:{destination_port}"
+        )
+
+        firewall_success = block_ip(
+            destination_ip
+        )
 
         if firewall_success:
-            print("[NETWORK] Connection mitigation: SUCCESS")
+            print(
+                "[NETWORK] IP containment: SUCCESS"
+            )
         else:
-            print("[NETWORK] Connection mitigation: FAILED")
+            print(
+                "[NETWORK] IP containment: FAILED"
+            )
 
     write_log(
         attack_type,
@@ -74,9 +139,29 @@ def receive_detection():
     )
 
     print(f"Status      : {status}")
-    print("==================================")
+    print("============================================")
+
+
 def main():
-    receive_detection()
+
+    import sys
+
+    if len(sys.argv) != 2:
+
+        print(
+            "Usage: python3 response_engine.py "
+            "<detection.json>"
+        )
+
+        raise SystemExit(1)
+
+    detection_file = sys.argv[1]
+
+    with open(detection_file, "r") as file:
+
+        detection = json.load(file)
+
+    receive_detection(detection)
 
 
 if __name__ == "__main__":

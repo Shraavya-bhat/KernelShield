@@ -1,0 +1,668 @@
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+
+#include "detector.h"
+#include "rules.h"
+#include "state.h"
+#include "process_table.h"
+#include "ks_alert.h"
+
+/*
+ * Temporal correlation window.
+ *
+ * Events occurring within this window are considered part
+ * of the same behavioral episode.
+ *
+ * 30 seconds gives enough room for multi-stage activity
+ * without correlating unrelated activity indefinitely.
+ */
+#define KS_BEHAVIOR_WINDOW_NS 30000000000ULL
+
+/*
+ * Add behavioral evidence to the current episode.
+ *
+ * The score is bounded to 100 so a noisy process cannot
+ * accumulate an unlimited risk value.
+ */
+static void add_behavior_score(
+    ks_process *process,
+    int points)
+{
+    if (!process || points <= 0)
+        return;
+
+    process->episode_score +=
+        (uint32_t)points;
+
+    if (process->episode_score > 100)
+        process->episode_score = 100;
+
+    process->behavioral_score =
+        (int)process->episode_score;
+}
+
+/*
+ * Check whether two timestamps belong to the same
+ * behavioral episode.
+ */
+static bool within_window(
+    uint64_t current,
+    uint64_t previous)
+{
+    if (previous == 0)
+        return false;
+
+    if (current < previous)
+        return false;
+
+    return (current - previous) <=
+           KS_BEHAVIOR_WINDOW_NS;
+}
+
+/*
+ * Ensure that the process has a valid behavioral episode.
+ *
+ * Activity separated by more than the correlation window
+ * starts a new episode and clears the previous score.
+ */
+static void ensure_episode(
+    ks_process *process,
+    uint64_t timestamp_ns)
+{
+    if (!process)
+        return;
+
+    /*
+     * First event for an episode.
+     */
+    if (process->episode_start_ns == 0) {
+
+        process->episode_id = 1;
+
+        process->episode_start_ns =
+            timestamp_ns;
+
+        process->episode_last_event_ns =
+            timestamp_ns;
+
+        process->episode_event_count = 1;
+
+        process->episode_score = 0;
+
+        process->behavioral_score = 0;
+
+        return;
+    }
+
+    /*
+     * Activity outside the temporal window starts
+     * a new independent behavioral episode.
+     */
+    if (!within_window(
+            timestamp_ns,
+            process->episode_last_event_ns)) {
+
+        process->episode_id++;
+
+        process->episode_start_ns =
+            timestamp_ns;
+
+        process->episode_event_count = 0;
+
+        process->episode_score = 0;
+
+        process->behavioral_score = 0;
+    }
+
+    process->episode_last_event_ns =
+        timestamp_ns;
+
+    process->episode_event_count++;
+}
+
+/*
+ * Convert accumulated behavioral evidence into severity.
+ *
+ * These thresholds describe the strength of correlated
+ * evidence, not a probability of compromise.
+ */
+static const char *severity_for_score(int score)
+{
+    if (score >= 85)
+        return "critical";
+
+    if (score >= 70)
+        return "high";
+
+    if (score >= 50)
+        return "medium";
+
+    return "low";
+}
+
+/*
+ * Convert accumulated evidence into a deterministic
+ * confidence value.
+ */
+static uint16_t confidence_for_score(int score)
+{
+    if (score >= 85)
+        return 95;
+
+    if (score >= 70)
+        return 85;
+
+    if (score >= 50)
+        return 70;
+
+    if (score >= 30)
+        return 50;
+
+    return 25;
+}
+
+/*
+ * Generate standardized ks_alert.
+ */
+static void emit_detection_alert(
+    const struct ks_event *event,
+    const char *attack_type,
+    const char *alert_type,
+    const char *severity,
+    const char *reason,
+    const char *mitre,
+    uint8_t has_network,
+    const char *destination_ip,
+    uint16_t destination_port,
+    uint32_t event_count)
+{
+    if (!event)
+        return;
+
+    ks_alert alert;
+
+    memset(&alert, 0, sizeof(alert));
+
+    alert.schema_version =
+        KS_ALERT_SCHEMA_VERSION;
+
+    alert.timestamp_ns =
+        event->timestamp_ns;
+
+    alert.pid =
+        event->pid;
+
+    alert.ppid =
+        event->ppid;
+
+    alert.uid =
+        event->uid;
+
+    alert.gid =
+        event->gid;
+
+    strncpy(
+        alert.process_name,
+        event->comm,
+        sizeof(alert.process_name) - 1
+    );
+
+    ks_process *parent =
+        ks_process_find(event->ppid);
+
+    if (parent) {
+
+        strncpy(
+            alert.parent_name,
+            parent->comm,
+            sizeof(alert.parent_name) - 1
+        );
+
+    } else {
+
+        strncpy(
+            alert.parent_name,
+            "unknown",
+            sizeof(alert.parent_name) - 1
+        );
+    }
+
+    strncpy(
+        alert.attack_type,
+        attack_type,
+        sizeof(alert.attack_type) - 1
+    );
+
+    strncpy(
+        alert.alert_type,
+        alert_type,
+        sizeof(alert.alert_type) - 1
+    );
+
+    strncpy(
+        alert.severity,
+        severity,
+        sizeof(alert.severity) - 1
+    );
+
+    strncpy(
+        alert.reason,
+        reason,
+        sizeof(alert.reason) - 1
+    );
+
+    strncpy(
+        alert.mitre_technique,
+        mitre,
+        sizeof(alert.mitre_technique) - 1
+    );
+
+    alert.has_network = has_network;
+
+    if (has_network && destination_ip) {
+
+        strncpy(
+            alert.destination_ip,
+            destination_ip,
+            sizeof(alert.destination_ip) - 1
+        );
+
+        alert.destination_port =
+            destination_port;
+    }
+
+    alert.event_count =
+        event_count;
+
+    /*
+     * Attach the current behavioral episode assessment.
+     */
+    ks_process *assessment_process =
+        ks_process_find(event->pid);
+
+    if (assessment_process) {
+
+        alert.risk_score =
+            (uint16_t)assessment_process->episode_score;
+
+        alert.confidence =
+            confidence_for_score(
+                assessment_process->episode_score
+            );
+    }
+
+    if (ks_alert_write(&alert) != 0) {
+
+        fprintf(
+            stderr,
+            "[KernelShield] Failed to write ks_alert\n"
+        );
+    }
+}
+
+void ks_detector_init(void)
+{
+    ks_state_init();
+    ks_process_table_init();
+
+    if (ks_alert_init() != 0) {
+
+        fprintf(
+            stderr,
+            "[KernelShield] WARNING: "
+            "ks_alert initialization failed\n"
+        );
+    }
+}
+
+void ks_detector_process_event(
+    const struct ks_event *event)
+{
+    if (!event)
+        return;
+
+    /*
+     * ======================================================
+     * EXECUTION
+     * ======================================================
+     */
+    if (event->type == KS_EVENT_EXEC) {
+
+        ks_process_add(event);
+
+        ks_process *process =
+            ks_process_find(event->pid);
+
+        if (!process)
+            return;
+
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
+        process->last_activity_ns =
+            event->timestamp_ns;
+
+        /*
+         * Existing process transition is itself evidence.
+         *
+         * Example:
+         *
+         * application -> interpreter
+         * interpreter -> network utility
+         */
+        if (process->exec_count > 1) {
+
+            add_behavior_score(process, 5);
+
+            printf(
+                "[BEHAVIOR] PID=%u transition %s -> %s\n",
+                process->pid,
+                process->previous_comm,
+                process->comm
+            );
+        }
+
+        /*
+         * Server -> shell remains a useful semantic signal,
+         * but it is now only ONE component of the behavioral
+         * score rather than the entire detection mechanism.
+         */
+        if (ks_rule_shell_from_server(event)) {
+
+            process->spawned_shell = true;
+
+            /*
+             * Server -> shell is suspicious evidence,
+             * not sufficient proof by itself.
+             */
+            add_behavior_score(process, 25);
+
+            printf(
+                "[BEHAVIOR] PID=%u server-to-shell evidence "
+                "score=%u episode=%u\\n",
+                process->pid,
+                process->episode_score,
+                process->episode_id
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * ======================================================
+     * NETWORK
+     * ======================================================
+     */
+    if (event->type == KS_EVENT_NETWORK) {
+
+        ks_state_add_network(event);
+
+        ks_process *process =
+            ks_process_find(event->pid);
+
+        if (!process)
+            return;
+
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
+        process->last_activity_ns =
+            event->timestamp_ns;
+
+        process->network_count++;
+        process->made_network_connection = true;
+        process->last_network_ns =
+            event->timestamp_ns;
+
+        /*
+         * Network activity immediately after an execution
+         * transition is stronger evidence than an isolated
+         * connection.
+         */
+        if (within_window(
+                event->timestamp_ns,
+                process->last_exec_ns)) {
+
+            add_behavior_score(process, 15);
+        }
+
+        /*
+         * Repeated network activity increases evidence.
+         */
+        if (process->network_count >= 3) {
+
+            add_behavior_score(process, 10);
+        }
+
+        char ip[INET_ADDRSTRLEN] = "unknown";
+
+        inet_ntop(
+            AF_INET,
+            &event->dst_ipv4,
+            ip,
+            sizeof(ip)
+        );
+
+        /*
+         * Multi-stage correlation:
+         *
+         * process
+         *    ↓
+         * shell ancestor
+         *    ↓
+         * network
+         */
+        if (!process->attack_chain_detected &&
+            ks_rule_attack_chain(process->pid)) {
+
+            process->attack_chain_detected = true;
+
+            add_behavior_score(process, 40);
+
+            emit_detection_alert(
+                event,
+                "multi_stage_attack",
+                "correlation",
+                "critical",
+                "Execution and network behavior formed a correlated multi-stage process chain",
+                "T1059",
+                1,
+                ip,
+                ntohs(event->dst_port),
+                process->exec_count +
+                process->network_count
+            );
+
+            return;
+        }
+
+        /*
+         * Shell network activity is another behavioral signal.
+         */
+        if (ks_rule_network_from_shell(event)) {
+
+            add_behavior_score(process, 20);
+
+            emit_detection_alert(
+                event,
+                "shell_network_activity",
+                "network",
+                severity_for_score(
+                    process->behavioral_score
+                ),
+                "Shell process generated outbound network activity",
+                "T1059",
+                1,
+                ip,
+                ntohs(event->dst_port),
+                process->network_count
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * ======================================================
+     * FILE ACTIVITY
+     * ======================================================
+     */
+    if (event->type == KS_EVENT_FILE) {
+
+        ks_process *process =
+            ks_process_find(event->pid);
+
+        if (!process)
+            return;
+
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
+        process->last_activity_ns =
+            event->timestamp_ns;
+
+        switch (event->file_operation) {
+
+        case KS_FILE_OPEN:
+
+            process->file_open_count++;
+            break;
+
+        case KS_FILE_WRITE:
+
+            process->file_write_count++;
+            process->wrote_file = true;
+            process->last_file_write_ns =
+                event->timestamp_ns;
+
+            /*
+             * File modification following execution/network
+             * behavior is stronger than an isolated write.
+             */
+            if (within_window(
+                    event->timestamp_ns,
+                    process->last_exec_ns) ||
+                within_window(
+                    event->timestamp_ns,
+                    process->last_network_ns)) {
+
+                add_behavior_score(process, 10);
+            }
+
+            break;
+
+        case KS_FILE_CREATE:
+
+            process->file_create_count++;
+            process->created_file = true;
+
+            if (within_window(
+                    event->timestamp_ns,
+                    process->last_network_ns)) {
+
+                add_behavior_score(process, 15);
+            }
+
+            break;
+
+        default:
+            break;
+        }
+
+        return;
+    }
+
+    /*
+     * ======================================================
+     * PRIVILEGE
+     * ======================================================
+     */
+    if (event->type == KS_EVENT_PRIVILEGE) {
+
+        ks_process *process =
+            ks_process_find(event->pid);
+
+        if (!process)
+            return;
+
+        ensure_episode(
+            process,
+            event->timestamp_ns
+        );
+
+        process->privilege_event_count++;
+        process->privilege_transition = true;
+        process->last_privilege_ns =
+            event->timestamp_ns;
+
+        /*
+         * Privilege transitions are significant evidence,
+         * particularly when close to execution/network activity.
+         */
+        add_behavior_score(process, 20);
+
+        if (within_window(
+                event->timestamp_ns,
+                process->last_exec_ns) ||
+            within_window(
+                event->timestamp_ns,
+                process->last_network_ns)) {
+
+            add_behavior_score(process, 15);
+        }
+
+        if (process->episode_score >= 50) {
+
+            emit_detection_alert(
+                event,
+                "privilege_transition",
+                "behavioral",
+                severity_for_score(
+                    process->episode_score
+                ),
+                "Privilege transition correlated with behavioral activity",
+                "T1548",
+                0,
+                NULL,
+                0,
+                process->episode_event_count
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * ======================================================
+     * EXIT
+     * ======================================================
+     */
+    if (event->type == KS_EVENT_EXIT) {
+
+        ks_process *process =
+            ks_process_find(event->pid);
+
+        if (process) {
+
+            process->last_activity_ns =
+                event->timestamp_ns;
+
+            ks_process_remove(event);
+        }
+
+        return;
+    }
+}
+
+void ks_detector_shutdown(void)
+{
+    ks_alert_close();
+}

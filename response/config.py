@@ -1,13 +1,22 @@
 """
-KernelShield Configuration
+KernelShield Response Configuration
 """
 
-# Never terminate these system-critical PIDs
-PROTECTED_PIDS = [1, 2]
+# Never terminate critical system processes.
+PROTECTED_PIDS = {
+    1,   # systemd/init
+    2,   # kthreadd
+}
 
-# Supported attack types
-SUPPORTED_ATTACKS = [
-    "reverse_shell",
-    "privilege_escalation",
-    "suspicious_process"
-]
+# KernelShield detection types.
+SUPPORTED_ATTACKS = {
+    "server_to_shell",
+    "multi_stage_attack",
+    "shell_network_activity",
+}
+
+# Only critical correlated behavior is automatically terminated.
+# High-severity detections are logged for investigation.
+AUTO_RESPONSE_SEVERITIES = {
+    "critical",
+}
