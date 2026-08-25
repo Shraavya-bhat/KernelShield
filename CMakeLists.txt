@@ -89,10 +89,12 @@ add_executable(kernelshield
     src/logger.c
     src/detector/process_table.c
     src/detector/correlator.c
+    src/detector/evidence_graph.c
     src/detector/attack_episode.c
     src/detector/rules.c
     src/detector/state.c
     src/detector/alert.c
+    src/response/response.c
 )
 
 target_include_directories(kernelshield PRIVATE

@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "ks_alert.h"
+#include "../response/response.h"
 
 #define KS_ALERT_JSONL_PATH "/var/log/kernelshield/alerts.jsonl"
 
@@ -191,5 +192,34 @@ int ks_alert_write(const ks_alert *alert)
 
     fflush(alert_fp);
 
-    return ferror(alert_fp) ? -1 : 0;
+    if (ferror(alert_fp))
+        return -1;
+
+    /*
+     * Automated response is intentionally executed only
+     * after the detection alert has been successfully
+     * persisted.
+     *
+     * This preserves the forensic record even if the
+     * containment action changes process state.
+     */
+    ks_response_action action =
+        ks_response_decide(
+            alert->risk_score,
+            alert->confidence,
+            alert->severity
+        );
+
+    if (action != KS_RESPONSE_NONE) {
+
+        ks_response_execute(
+            alert->pid,
+            action,
+            alert->risk_score,
+            alert->confidence,
+            alert->reason
+        );
+    }
+
+    return 0;
 }
