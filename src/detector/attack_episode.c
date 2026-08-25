@@ -64,6 +64,11 @@ static ks_attack_episode *find_episode(
     uint64_t timestamp
 )
 {
+    /*
+     * First check direct process continuation and
+     * direct parent-child relationship using the
+     * event's PPID.
+     */
     for (int i = 0; i < KS_MAX_ATTACK_EPISODES; i++) {
 
         ks_attack_episode *episode =
@@ -79,34 +84,62 @@ static ks_attack_episode *find_episode(
             continue;
 
         /*
-         * Direct event continuation.
+         * Same process continues the episode.
          */
         if (episode->last_pid == pid ||
             episode->root_pid == pid)
             return episode;
 
         /*
-         * Check whether this process belongs to
-         * the lineage of the episode.
+         * Direct child of the episode's current
+         * or root process.
          */
-        ks_process *process =
-            ks_process_find(pid);
+        if (ppid != 0 &&
+            (episode->last_pid == ppid ||
+             episode->root_pid == ppid))
+            return episode;
+    }
 
-        int depth = 0;
+    /*
+     * If no direct relationship was found, walk the
+     * known process lineage for deeper descendants.
+     */
+    ks_process *process =
+        ks_process_find(pid);
 
-        while (process && depth < 8) {
+    int depth = 0;
+
+    while (process && depth < 8) {
+
+        for (int i = 0;
+             i < KS_MAX_ATTACK_EPISODES;
+             i++) {
+
+            ks_attack_episode *episode =
+                &episodes[i];
+
+            if (!episode->active ||
+                episode->closed)
+                continue;
+
+            if (timestamp >
+                episode->last_event_ns +
+                KS_EPISODE_WINDOW_NS)
+                continue;
 
             if (process->pid ==
-                episode->root_pid)
+                episode->root_pid ||
+                process->ppid ==
+                episode->root_pid) {
+
                 return episode;
-
-            process =
-                ks_process_find(
-                    process->ppid
-                );
-
-            depth++;
+            }
         }
+
+        process =
+            ks_process_find(process->ppid);
+
+        depth++;
     }
 
     return NULL;
@@ -364,16 +397,26 @@ static void apply_event(
 
     case KS_EVENT_PRIVILEGE:
 
-        episode->evidence_mask |=
-            EVIDENCE_PRIVILEGE;
+        /*
+         * Privilege activity can occur repeatedly during normal
+         * service and authentication behavior. Count privilege
+         * evidence only once per episode, just like network and
+         * file evidence, so repeated events cannot independently
+         * drive an episode to critical severity.
+         */
+        if (!(episode->evidence_mask & EVIDENCE_PRIVILEGE)) {
 
-        episode->score += 30;
+            episode->evidence_mask |=
+                EVIDENCE_PRIVILEGE;
 
-        update_stage(
-            episode,
-            KS_STAGE_PRIVILEGE_ESCALATION,
-            event->timestamp_ns
-        );
+            episode->score += 30;
+
+            update_stage(
+                episode,
+                KS_STAGE_PRIVILEGE_ESCALATION,
+                event->timestamp_ns
+            );
+        }
 
         break;
 
@@ -437,6 +480,76 @@ void ks_attack_episode_init(void)
 }
 
 
+
+/*
+ * Episode admission control.
+ *
+ * Not every kernel event represents suspicious activity. File and
+ * network activity are extremely common during normal application
+ * execution, so they must not independently create an attack episode.
+ *
+ * An episode is admitted only when there is an initial execution or
+ * privilege-related signal with sufficient security relevance.
+ */
+static bool should_start_episode(
+    const struct ks_event *event
+)
+{
+    if (!event)
+        return false;
+
+    switch (event->type) {
+
+    case KS_EVENT_EXEC:
+
+        /*
+         * A shell represents an execution context capable of launching
+         * a command chain. Allow it to establish an episode root.
+         */
+        if (is_shell(event->comm))
+            return true;
+
+        /*
+         * Processes spawned from an already tracked lineage will be
+         * correlated later by find_episode(). For standalone processes,
+         * only admit commands already classified as suspicious by the
+         * existing rule/correlation layer.
+         *
+         * The current implementation uses common command-line utilities
+         * as low-confidence execution signals.
+         */
+        if (strcmp(event->comm, "curl") == 0 ||
+            strcmp(event->comm, "wget") == 0 ||
+            strcmp(event->comm, "nc") == 0 ||
+            strcmp(event->comm, "ncat") == 0 ||
+            strcmp(event->comm, "python") == 0 ||
+            strcmp(event->comm, "python3") == 0)
+            return true;
+
+        return false;
+
+    case KS_EVENT_PRIVILEGE:
+
+        /*
+         * Privilege-related activity is security significant enough to
+         * establish an episode independently.
+         */
+        return true;
+
+    /*
+     * Network and file events are evidence, not episode roots.
+     * They can strengthen an existing correlated episode but cannot
+     * create one by themselves.
+     */
+    case KS_EVENT_NETWORK:
+    case KS_EVENT_FILE:
+    case KS_EVENT_EXIT:
+    default:
+        return false;
+    }
+}
+
+
 ks_attack_episode *ks_attack_episode_process_event(
     const struct ks_event *event
 )
@@ -445,13 +558,18 @@ ks_attack_episode *ks_attack_episode_process_event(
         return NULL;
 
     /*
-     * Ignore passive exit events when constructing
-     * an attack episode.
+     * Exit events provide lifecycle information only.
+     * They must never create or extend an attack episode.
      */
-    if (event->type ==
-        KS_EVENT_EXIT)
+    if (event->type == KS_EVENT_EXIT)
         return NULL;
 
+    /*
+     * First attempt to correlate the event with an existing episode.
+     *
+     * This allows file and network activity from child processes to
+     * contribute evidence without independently creating episodes.
+     */
     ks_attack_episode *episode =
         find_episode(
             event->pid,
@@ -459,12 +577,23 @@ ks_attack_episode *ks_attack_episode_process_event(
             event->timestamp_ns
         );
 
-    if (!episode)
-        episode =
-            create_episode(event);
+    /*
+     * No existing lineage was found.
+     *
+     * Apply admission control before allocating a new attack episode.
+     * This prevents ordinary browser, system and application activity
+     * from polluting the attack correlation engine.
+     */
+    if (!episode) {
 
-    if (!episode)
-        return NULL;
+        if (!should_start_episode(event))
+            return NULL;
+
+        episode = create_episode(event);
+
+        if (!episode)
+            return NULL;
+    }
 
     apply_event(
         episode,
