@@ -531,10 +531,14 @@ static bool should_start_episode(
     case KS_EVENT_PRIVILEGE:
 
         /*
-         * Privilege-related activity is security significant enough to
-         * establish an episode independently.
+         * A privilege event alone must not automatically create an
+         * attack episode. Legitimate sudo and authentication activity
+         * would otherwise create false positives.
+         *
+         * Privilege escalation can still contribute evidence to an
+         * already-established suspicious process lineage.
          */
-        return true;
+        return false;
 
     /*
      * Network and file events are evidence, not episode roots.
