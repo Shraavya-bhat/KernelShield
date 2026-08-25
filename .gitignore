@@ -33,3 +33,7 @@ __pycache__/
 # Runtime logs
 *.jsonl
 *.log
+
+# Local development backups and test binaries
+*.bak-*
+tests/response_test
