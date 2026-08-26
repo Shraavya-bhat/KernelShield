@@ -6,7 +6,9 @@
 #include "rules.h"
 #include "state.h"
 #include "process_table.h"
+#include "evidence_graph.h"
 #include "ks_alert.h"
+#include "attack_episode.h"
 
 /*
  * Temporal correlation window.
@@ -303,6 +305,7 @@ static void emit_detection_alert(
 
 void ks_detector_init(void)
 {
+    ks_attack_episode_init();
     ks_state_init();
     ks_process_table_init();
 
@@ -323,6 +326,82 @@ void ks_detector_process_event(
         return;
 
     /*
+     * High-level attack episode reconstruction.
+     *
+     * Every event observed by KernelShield is also evaluated
+     * as part of a multi-stage attack episode.
+     */
+    ks_attack_episode *attack_episode =
+        ks_attack_episode_process_event(event);
+
+    if (attack_episode) {
+
+        static uint32_t last_episode_id = 0;
+        static int last_score = -1;
+        static ks_attack_stage last_stage = KS_STAGE_UNKNOWN;
+
+        /*
+         * Only show an attack update when the episode contains
+         * meaningful suspicious behavior.
+         */
+        bool suspicious =
+            attack_episode->score >= 20 ||
+            attack_episode->current_stage >=
+                KS_STAGE_SUSPICIOUS_SPAWN;
+
+        if (suspicious) {
+
+            bool meaningful_change = false;
+
+            if (attack_episode->id != last_episode_id)
+                meaningful_change = true;
+
+            if (attack_episode->current_stage != last_stage)
+                meaningful_change = true;
+
+            if ((attack_episode->score / 10) !=
+                (last_score / 10))
+                meaningful_change = true;
+
+            if (meaningful_change) {
+
+                printf(
+                    "\n"
+                    "========== KERNELSHIELD ATTACK UPDATE ==========\n"
+                    "Episode ID       : KS-%06u\n"
+                    "Root PID         : %u\n"
+                    "Process          : %s\n"
+                    "Events Seen      : %u\n"
+                    "Risk Score       : %d/100\n"
+                    "Current Stage    : %s\n"
+                    "Predicted Next   : %s\n"
+                    "Containment      : %s\n"
+                    "================================================\n\n",
+
+                    attack_episode->id,
+                    attack_episode->root_pid,
+                    attack_episode->last_process,
+                    attack_episode->event_count,
+                    attack_episode->score > 100 ?
+                        100 : attack_episode->score,
+                    ks_attack_stage_name(
+                        attack_episode->current_stage
+                    ),
+                    ks_attack_stage_name(
+                        attack_episode->predicted_next_stage
+                    ),
+                    attack_episode->containment_recommended ?
+                        "RECOMMENDED" : "MONITOR"
+                );
+
+                last_episode_id = attack_episode->id;
+                last_score = attack_episode->score;
+                last_stage = attack_episode->current_stage;
+            }
+        }
+    }
+
+    /*
      * ======================================================
      * EXECUTION
      * ======================================================
@@ -339,6 +418,12 @@ void ks_detector_process_event(
 
         ensure_episode(
             process,
+            event->timestamp_ns
+        );
+
+        ks_evidence_add(
+            &process->evidence_graph,
+            KS_EVIDENCE_EXECUTION,
             event->timestamp_ns
         );
 
@@ -373,6 +458,12 @@ void ks_detector_process_event(
         if (ks_rule_shell_from_server(event)) {
 
             process->spawned_shell = true;
+
+            ks_evidence_add(
+                &process->evidence_graph,
+                KS_EVIDENCE_SHELL,
+                event->timestamp_ns
+            );
 
             /*
              * Server -> shell is suspicious evidence,
@@ -409,6 +500,12 @@ void ks_detector_process_event(
 
         ensure_episode(
             process,
+            event->timestamp_ns
+        );
+
+        ks_evidence_add(
+            &process->evidence_graph,
+            KS_EVIDENCE_NETWORK,
             event->timestamp_ns
         );
 
@@ -459,9 +556,17 @@ void ks_detector_process_event(
          * network
          */
         if (!process->attack_chain_detected &&
+            !process->chain_alert_emitted &&
             ks_rule_attack_chain(process->pid)) {
 
             process->attack_chain_detected = true;
+            process->chain_alert_emitted = true;
+
+            ks_evidence_add(
+                &process->evidence_graph,
+                KS_EVIDENCE_CHAIN,
+                event->timestamp_ns
+            );
 
             add_behavior_score(process, 40);
 
@@ -485,7 +590,10 @@ void ks_detector_process_event(
         /*
          * Shell network activity is another behavioral signal.
          */
-        if (ks_rule_network_from_shell(event)) {
+        if (!process->network_alert_emitted &&
+            ks_rule_network_from_shell(event)) {
+
+            process->network_alert_emitted = true;
 
             add_behavior_score(process, 20);
 
@@ -526,6 +634,16 @@ void ks_detector_process_event(
             event->timestamp_ns
         );
 
+        /*
+         * File evidence is recorded independently from scoring.
+         * Repeated writes do not increase evidence diversity.
+         */
+        ks_evidence_add(
+            &process->evidence_graph,
+            KS_EVIDENCE_FILE,
+            event->timestamp_ns
+        );
+
         process->last_activity_ns =
             event->timestamp_ns;
 
@@ -542,6 +660,22 @@ void ks_detector_process_event(
             process->wrote_file = true;
             process->last_file_write_ns =
                 event->timestamp_ns;
+
+            /*
+             * Track modification of the same temporary file
+             * created during this process episode.
+             */
+            if (process->temporary_file_created &&
+                process->tracked_file_path[0] != '\0' &&
+                strcmp(
+                    event->file_path,
+                    process->tracked_file_path
+                ) == 0) {
+
+                process->temporary_file_written = true;
+                process->temporary_file_write_ns =
+                    event->timestamp_ns;
+            }
 
             /*
              * File modification following execution/network
@@ -571,10 +705,89 @@ void ks_detector_process_event(
                 add_behavior_score(process, 15);
             }
 
+            /*
+             * Track temporary-file creation as evidence only.
+             *
+             * Creating a file in /tmp is normal on Linux and
+             * must never generate an alert by itself.
+             */
+            if (strstr(event->file_path, "/tmp/") != NULL) {
+
+                process->temporary_file_created = true;
+                process->temporary_file_create_ns =
+                    event->timestamp_ns;
+
+                snprintf(
+                    process->tracked_file_path,
+                    sizeof(process->tracked_file_path),
+                    "%s",
+                    event->file_path
+                );
+            }
+
             break;
 
         default:
             break;
+        }
+
+        /*
+         * Production file-chain correlation.
+         *
+         * Require multiple independent pieces of evidence:
+         *
+         *   network / shell / privilege
+         *            +
+         *   temporary file creation
+         *            +
+         *   modification of that same file
+         *
+         * This prevents ordinary /tmp activity from becoming
+         * an alert by itself.
+         */
+        /*
+         * Alert eligibility requires independent evidence.
+         *
+         * FILE evidence alone is never enough.
+         *
+         * Require:
+         *
+         *   FILE
+         *     +
+         *   at least two independent evidence categories
+         *
+         * This prevents repeated activity of one type from
+         * artificially satisfying a correlation threshold.
+         */
+        if (!process->file_alert_emitted &&
+            process->temporary_file_created &&
+            process->temporary_file_written &&
+            ks_evidence_has_all(
+                &process->evidence_graph,
+                KS_EVIDENCE_FILE
+            ) &&
+            ks_evidence_meets_minimum(
+                &process->evidence_graph,
+                3
+            ) &&
+            process->episode_score >= 50) {
+
+            process->file_alert_emitted = true;
+
+            emit_detection_alert(
+                event,
+                "correlated_file_drop",
+                "correlation",
+                severity_for_score(
+                    process->episode_score
+                ),
+                "Temporary file creation and modification correlated with independent suspicious process behavior",
+                "T1105",
+                process->made_network_connection ? 1 : 0,
+                "",
+                0,
+                process->episode_event_count
+            );
         }
 
         return;
@@ -598,28 +811,70 @@ void ks_detector_process_event(
             event->timestamp_ns
         );
 
+        ks_evidence_add(
+            &process->evidence_graph,
+            KS_EVIDENCE_PRIVILEGE,
+            event->timestamp_ns
+        );
+
+        process->last_activity_ns =
+            event->timestamp_ns;
+
         process->privilege_event_count++;
         process->privilege_transition = true;
         process->last_privilege_ns =
             event->timestamp_ns;
 
         /*
-         * Privilege transitions are significant evidence,
-         * particularly when close to execution/network activity.
+         * Production privilege-escalation correlation.
+         *
+         * A privilege transition is common for legitimate tools
+         * such as sudo, package managers, cron jobs and services.
+         *
+         * FILE evidence is deliberately NOT sufficient because
+         * privileged programs normally access and create files.
+         *
+         * Require:
+         *
+         *     PRIVILEGE
+         *        +
+         *     NETWORK or SHELL or CHAIN
+         *
+         * and at least three independent evidence categories.
          */
-        add_behavior_score(process, 20);
 
-        if (within_window(
-                event->timestamp_ns,
-                process->last_exec_ns) ||
-            within_window(
-                event->timestamp_ns,
-                process->last_network_ns)) {
+        bool strong_privilege_context =
+            ks_evidence_has(
+                &process->evidence_graph,
+                KS_EVIDENCE_NETWORK
+            ) ||
+            ks_evidence_has(
+                &process->evidence_graph,
+                KS_EVIDENCE_SHELL
+            ) ||
+            ks_evidence_has(
+                &process->evidence_graph,
+                KS_EVIDENCE_CHAIN
+            );
 
-            add_behavior_score(process, 15);
+        if (strong_privilege_context) {
+
+            add_behavior_score(process, 25);
         }
 
-        if (process->episode_score >= 50) {
+        if (!process->privilege_alert_emitted &&
+            strong_privilege_context &&
+            ks_evidence_has_all(
+                &process->evidence_graph,
+                KS_EVIDENCE_PRIVILEGE
+            ) &&
+            ks_evidence_meets_minimum(
+                &process->evidence_graph,
+                3
+            ) &&
+            process->episode_score >= 70) {
+
+            process->privilege_alert_emitted = true;
 
             emit_detection_alert(
                 event,
@@ -628,10 +883,10 @@ void ks_detector_process_event(
                 severity_for_score(
                     process->episode_score
                 ),
-                "Privilege transition correlated with behavioral activity",
+                "Privilege transition correlated with independent network, shell, or multi-stage evidence",
                 "T1548",
-                0,
-                NULL,
+                process->made_network_connection ? 1 : 0,
+                "",
                 0,
                 process->episode_event_count
             );

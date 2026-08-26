@@ -2,8 +2,9 @@
 #include <string.h>
 
 #include "ks_alert.h"
+#include "../response/response.h"
 
-#define KS_ALERT_JSONL_PATH "/tmp/kernelshield-alerts.jsonl"
+#define KS_ALERT_JSONL_PATH "/var/log/kernelshield/alerts.jsonl"
 
 static FILE *alert_fp = NULL;
 
@@ -157,7 +158,9 @@ int ks_alert_write(const ks_alert *alert)
         "\"has_network\":%u,"
         "\"destination_ip\":\"%s\","
         "\"destination_port\":%u,"
-        "\"event_count\":%u"
+        "\"event_count\":%u,"
+        "\"risk_score\":%u,"
+        "\"confidence\":%u"
         "}\n",
 
         alert->schema_version,
@@ -182,10 +185,41 @@ int ks_alert_write(const ks_alert *alert)
         destination_ip,
         alert->destination_port,
 
-        alert->event_count
+        alert->event_count,
+        alert->risk_score,
+        alert->confidence
     );
 
     fflush(alert_fp);
 
-    return ferror(alert_fp) ? -1 : 0;
+    if (ferror(alert_fp))
+        return -1;
+
+    /*
+     * Automated response is intentionally executed only
+     * after the detection alert has been successfully
+     * persisted.
+     *
+     * This preserves the forensic record even if the
+     * containment action changes process state.
+     */
+    ks_response_action action =
+        ks_response_decide(
+            alert->risk_score,
+            alert->confidence,
+            alert->severity
+        );
+
+    if (action != KS_RESPONSE_NONE) {
+
+        ks_response_execute(
+            alert->pid,
+            action,
+            alert->risk_score,
+            alert->confidence,
+            alert->reason
+        );
+    }
+
+    return 0;
 }

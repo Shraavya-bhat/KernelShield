@@ -163,6 +163,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	else if (e->type == KS_EVENT_FILE) {
 
 		const char *operation = "UNKNOWN";
+		const char *path = e->file_path;
 
 		switch (e->file_operation) {
 		case KS_FILE_OPEN:
@@ -187,13 +188,63 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			break;
 		}
 
-		printf("%-8s %-7s PID=%-6u COMM=%-16s OP=%-8s PATH=%s\n",
-		       ts,
-		       "FILE",
-		       e->pid,
-		       e->comm,
-		       operation,
-		       e->file_path);
+		/*
+		 * Console presentation filter.
+		 *
+		 * IMPORTANT:
+		 * This does NOT suppress telemetry or detection.
+		 * Every event has already been logged and passed to
+		 * the detection/correlation engine above.
+		 *
+		 * Only high-value or potentially suspicious file
+		 * activity is displayed on the interactive console.
+		 */
+		bool noisy_path =
+			strstr(path, "/.cache/") ||
+			strstr(path, "/cache2/") ||
+			strstr(path, "/mozilla/") ||
+			strstr(path, "/fontconfig/") ||
+			strstr(path, "/mesa_shader_cache/") ||
+			strstr(path, "/fonts/") ||
+			strstr(path, "/snap/firefox/") ||
+			strstr(path, ".sqlite") ||
+			strstr(path, ".sqlite-wal") ||
+			strstr(path, ".sqlite-journal") ||
+			strstr(path, ".cache-");
+
+		bool destructive_operation =
+			e->file_operation == KS_FILE_RENAME ||
+			e->file_operation == KS_FILE_DELETE;
+
+		bool executable_activity =
+			e->file_operation == KS_FILE_EXECUTE;
+
+		bool sensitive_path =
+			strstr(path, "/etc/") ||
+			strstr(path, "/usr/bin/") ||
+			strstr(path, "/usr/sbin/") ||
+			strstr(path, "/bin/") ||
+			strstr(path, "/sbin/") ||
+			strstr(path, "/var/tmp/") ||
+			strstr(path, "/tmp/");
+
+		bool user_writable_activity =
+			strstr(path, "/home/") &&
+			!noisy_path;
+
+		if (destructive_operation ||
+		    executable_activity ||
+		    sensitive_path ||
+		    user_writable_activity) {
+
+			printf("%-8s %-7s PID=%-6u COMM=%-16s OP=%-8s PATH=%s\n",
+			       ts,
+			       "FILE",
+			       e->pid,
+			       e->comm,
+			       operation,
+			       path);
+		}
 	}
 
 	fflush(stdout);
