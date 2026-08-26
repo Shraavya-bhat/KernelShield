@@ -44,3 +44,4 @@ tests/response_test
 
 # Compiled local integration test binaries
 tests/alert_response_test
+tests/protected_response_test
