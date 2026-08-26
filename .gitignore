@@ -41,3 +41,6 @@ tests/response_test
 # Local development backups and compiled test binaries
 *.bak-*
 tests/response_test
+
+# Compiled local integration test binaries
+tests/alert_response_test
