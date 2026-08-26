@@ -37,3 +37,7 @@ __pycache__/
 # Local development backups and test binaries
 *.bak-*
 tests/response_test
+
+# Local development backups and compiled test binaries
+*.bak-*
+tests/response_test
